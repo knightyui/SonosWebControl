@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.sonos-web</string>
+  <key>ProgramArguments</key><array><string>{{NODE_BIN}}</string><string>{{PROJECT_DIR}}/web/server.mjs</string></array>
+  <key>WorkingDirectory</key><string>{{PROJECT_DIR}}/web</string>
+  <key>EnvironmentVariables</key><dict>
+    <key>SONOS_IP</key><string>{{SONOS_IP}}</string>
+    <key>PORT</key><string>38473</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>{{PROJECT_DIR}}/web/.server.stdout.log</string>
+  <key>StandardErrorPath</key><string>{{PROJECT_DIR}}/web/.server.stderr.log</string>
+</dict></plist>

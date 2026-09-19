@@ -1,0 +1,16 @@
+.DS_Store
+node_modules/
+web/.qq-session.json
+*.log
+*.log.*
+logs/
+.cache/
+cache/
+*.cache
+tmp/
+*.tmp
+*.pid
+.env
+.env.*
+*.local
+*.plist
