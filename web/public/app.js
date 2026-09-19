@@ -3,6 +3,50 @@ let songs=[],visible=60,filtered=[],currentStatus=null,toastTimer,qrTimer,localL
 let seeking=false,volumeDragging=false,volumeDesired=null,volumeSending=false,artUrl='';
 let lyrics=[],lyricTrack='',lyricMessage='正在读取歌词…',activeLyricIndex=-2;
 let positionAnchor={seconds:0,at:Date.now(),playing:false};
+const themeProperties=['--page-bg','--page-glow','--surface','--surface-deep','--surface-raised','--border','--accent'];
+function resetSongTheme(){for(const name of themeProperties)document.documentElement.style.removeProperty(name);}
+function rgbToHsl(r,g,b){
+  r/=255;g/=255;b/=255;
+  const max=Math.max(r,g,b),min=Math.min(r,g,b),difference=max-min;
+  let hue=0,saturation=0,lightness=(max+min)/2;
+  if(difference){
+    saturation=difference/(1-Math.abs(2*lightness-1));
+    switch(max){case r:hue=((g-b)/difference)%6;break;case g:hue=(b-r)/difference+2;break;default:hue=(r-g)/difference+4;}
+    hue=(hue*60+360)%360;
+  }
+  return {hue,saturation,lightness};
+}
+function applySongTheme(image){
+  try{
+    const canvas=document.createElement('canvas');canvas.width=24;canvas.height=24;
+    const context=canvas.getContext('2d',{willReadFrequently:true});
+    context.drawImage(image,0,0,24,24);
+    const pixels=context.getImageData(0,0,24,24).data;
+    const buckets=Array.from({length:18},()=>({weight:0,x:0,y:0,saturation:0}));
+    for(let i=0;i<pixels.length;i+=4){
+      if(pixels[i+3]<180)continue;
+      const color=rgbToHsl(pixels[i],pixels[i+1],pixels[i+2]);
+      if(color.saturation<.16||color.lightness<.12||color.lightness>.88)continue;
+      const weight=Math.min(color.saturation,.65);
+      const bucket=buckets[Math.floor(color.hue/20)];
+      bucket.weight+=weight;bucket.x+=Math.cos(color.hue*Math.PI/180)*weight;
+      bucket.y+=Math.sin(color.hue*Math.PI/180)*weight;
+      bucket.saturation+=color.saturation*weight;
+    }
+    const best=buckets.reduce((a,b)=>b.weight>a.weight?b:a);
+    if(best.weight<3){resetSongTheme();return;}
+    const hue=(Math.atan2(best.y,best.x)*180/Math.PI+360)%360;
+    const saturation=Math.round(Math.min(36,Math.max(18,best.saturation/best.weight*42)));
+    const root=document.documentElement.style;
+    root.setProperty('--page-bg',`hsl(${hue.toFixed(0)} ${saturation}% 11%)`);
+    root.setProperty('--page-glow',`hsl(${hue.toFixed(0)} ${saturation+5}% 22%)`);
+    root.setProperty('--surface',`hsl(${hue.toFixed(0)} ${Math.max(12,saturation-6)}% 17%)`);
+    root.setProperty('--surface-deep',`hsl(${hue.toFixed(0)} ${Math.max(10,saturation-6)}% 14%)`);
+    root.setProperty('--surface-raised',`hsl(${hue.toFixed(0)} ${Math.max(12,saturation-6)}% 23%)`);
+    root.setProperty('--border',`hsl(${hue.toFixed(0)} ${Math.max(10,saturation-10)}% 30%)`);
+    root.setProperty('--accent',`hsl(${hue.toFixed(0)} ${Math.min(52,saturation+16)}% 77%)`);
+  }catch{resetSongTheme();}
+}
 function toast(message){const el=$('toast');el.textContent=message;el.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove('show'),4000);}
 async function api(path,options){const response=await fetch(path,options);const data=await response.json();if(!response.ok)throw Error(data.error||`请求失败：${response.status}`);return data;}
 function duration(seconds){return `${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`;}
@@ -63,11 +107,11 @@ function renderStatus(s){
     if(!seeking){seek.value=Math.min(length,timecode(s.position));$(prefix+'position').textContent=s.position||'0:00';}
     $(prefix+'duration').textContent=s.duration||'0:00';
   }
-  if(artUrl!==(s.albumArt||'')){artUrl=s.albumArt||'';for(const id of ['album-art','mini-art']){const image=$(id);image.hidden=true;image.removeAttribute('src');if(artUrl)image.src=artUrl;}}
+  if(artUrl!==(s.albumArt||'')){artUrl=s.albumArt||'';resetSongTheme();for(const id of ['album-art','mini-art']){const image=$(id);image.hidden=true;image.removeAttribute('src');if(artUrl)image.src=artUrl;}}
   loadLyricsFor(s);
   renderLyricsAt(positionAnchor.seconds);
 }
-for(const id of ['album-art','mini-art']){const art=$(id);art.onload=()=>{art.hidden=false;};art.onerror=()=>{art.hidden=true;};}
+for(const id of ['album-art','mini-art']){const art=$(id);art.onload=()=>{art.hidden=false;if(id==='album-art')applySongTheme(art);};art.onerror=()=>{art.hidden=true;if(id==='album-art')resetSongTheme();};}
 async function updateStatus(){try{renderStatus(await api('/api/status'));}catch(e){$('connection').textContent='● 音响未连接';$('connection').className='connection error';if(!currentStatus)toast(e.message);}}
 async function playSong(song,row){
   const fromSearch=Boolean(row.closest('#quick-search-results'));
@@ -126,8 +170,10 @@ async function checkSession(){try{const state=await api('/api/qq/session');local
 function stopQr(){clearInterval(qrTimer);qrTimer=null;}
 async function startQr(){stopQr();$('qr-state').hidden=false;$('qr-state').textContent='正在获取二维码…';$('qr-image').hidden=true;try{const data=await api('/api/qq/login/qr',{method:'POST'});$('qr-image').src=data.image;$('qr-image').hidden=false;$('qr-state').textContent='请用 QQ 扫码并确认登录';qrTimer=setInterval(pollQr,2500);}catch(e){$('qr-state').textContent=`${e.message}；可尝试导入 Cookie。`;}}
 async function pollQr(){try{const data=await api('/api/qq/login/poll');if(data.state==='waiting')return;if(data.state==='scanned'){$('qr-state').textContent='已扫码，请在手机上确认';return;}if(data.state==='expired'){stopQr();$('qr-state').textContent='二维码已过期，请重新获取。';return;}if(data.state==='connected'){stopQr();$('login-dialog').close();await checkSession();await loadPlaylist(true);toast('QQ 音乐已登录');}}catch(e){stopQr();$('qr-state').textContent=e.message;}}
-$('login').onclick=()=>{$('login-dialog').showModal();updateMiniVisibility();startQr();};$('login-close').onclick=()=>{$('login-dialog').close();stopQr();};$('login-dialog').onclose=stopQr;$('qr-retry').onclick=startQr;
-$('lyrics-open').onclick=$('mini-lyric-open').onclick=()=>{$('lyrics-dialog').showModal();updateMiniVisibility();renderLyricsAt(positionAnchor.seconds+(positionAnchor.playing?(Date.now()-positionAnchor.at)/1000:0));scrollActiveLyric();};
+function showDialog(id,event){const dialog=$(id);dialog.classList.toggle('suppress-initial-focus',event.detail>0);dialog.showModal();}
+for(const id of ['login-dialog','lyrics-dialog','quick-search-dialog']){const dialog=$(id);dialog.addEventListener('keydown',()=>dialog.classList.remove('suppress-initial-focus'));dialog.addEventListener('close',()=>dialog.classList.remove('suppress-initial-focus'));}
+$('login').onclick=e=>{showDialog('login-dialog',e);updateMiniVisibility();startQr();};$('login-close').onclick=()=>$('login-dialog').close();$('login-dialog').onclose=stopQr;$('qr-retry').onclick=startQr;
+$('lyrics-open').onclick=$('mini-lyric-open').onclick=e=>{showDialog('lyrics-dialog',e);updateMiniVisibility();renderLyricsAt(positionAnchor.seconds+(positionAnchor.playing?(Date.now()-positionAnchor.at)/1000:0));scrollActiveLyric();};
 $('lyrics-close').onclick=()=>$('lyrics-dialog').close();$('lyrics-dialog').addEventListener('close',updateMiniVisibility);
 $('cookie-save').onclick=async()=>{const button=$('cookie-save');button.disabled=true;try{await api('/api/qq/login/cookie',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cookie:$('cookie-input').value})});$('cookie-input').value='';$('login-dialog').close();stopQr();await checkSession();await loadPlaylist(true);toast('QQ 音乐登录状态已保存');}catch(e){toast(e.message);}finally{button.disabled=false;}};
 async function control(action,value){try{await api('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,value})});await updateStatus();}catch(e){toast(e.message);}}
@@ -152,7 +198,7 @@ window.addEventListener('scroll',updateMiniVisibility,{passive:true});window.add
 $('login-dialog').addEventListener('close',updateMiniVisibility);
 updateMiniVisibility();
 $('search').oninput=()=>{visible=60;renderSongs();};$('refresh').onclick=()=>loadPlaylist(true);
-$('quick-search-open').onclick=()=>{$('quick-search').value=$('search').value;$('quick-search-dialog').showModal();renderQuickResults();updateMiniVisibility();$('quick-search').focus({preventScroll:true});};
+$('quick-search-open').onclick=e=>{$('quick-search').value=$('search').value;showDialog('quick-search-dialog',e);renderQuickResults();updateMiniVisibility();$('quick-search').focus({preventScroll:true});};
 $('quick-search-close').onclick=()=>$('quick-search-dialog').close();
 $('quick-search-dialog').addEventListener('close',updateMiniVisibility);
 $('quick-search').oninput=renderQuickResults;
