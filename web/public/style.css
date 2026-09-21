@@ -104,12 +104,13 @@ dialog{border:1px solid #545469;border-radius:18px;background:#242635;color:#f3f
 .controls .icon-button::before,.mini-controls .icon-button::before,.controls .play-button::before,.mini-controls .play-button::before,.shuffle-button.active::after{content:none;display:none}
 .controls .icon-button svg,.mini-controls .icon-button:not(.mute-button) svg{width:25px;height:25px;position:static}
 .controls .shuffle-button svg,.mini-controls .shuffle-button svg{width:23px;height:23px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+.controls .repeat-button svg,.mini-controls .repeat-button svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 .controls .skip-button svg,.mini-controls .skip-button svg{width:28px;height:28px;fill:currentColor;stroke:none}
 .controls .play-button svg,.mini-controls .play-button svg{width:24px;height:24px;position:static;fill:currentColor}
 .controls .icon-button:hover,.mini-controls .icon-button:not(.mute-button):hover{background:#ffffff1a;color:#fff}
 .controls .play-button:hover,.mini-controls .play-button:hover{background:var(--control-hover)}
-.controls .shuffle-button.active,.mini-controls .shuffle-button.active{background:#f6f7f5;color:var(--page-bg)}
-.controls .shuffle-button.active:hover,.mini-controls .shuffle-button.active:hover{background:#fff;color:var(--page-bg)}
+.controls .shuffle-button.active,.mini-controls .shuffle-button.active,.controls .repeat-button.active,.mini-controls .repeat-button.active{background:#f6f7f5;color:var(--page-bg)}
+.controls .shuffle-button.active:hover,.mini-controls .shuffle-button.active:hover,.controls .repeat-button.active:hover,.mini-controls .repeat-button.active:hover{background:#fff;color:var(--page-bg)}
 .mini-controls{gap:0;padding:0}
 .mini-controls .icon-button:not(.mute-button){width:44px;min-width:44px;height:44px;min-height:44px}
 .mini-controls .play-button{width:46px;min-width:46px;height:46px;min-height:46px}
@@ -117,6 +118,55 @@ dialog{border:1px solid #545469;border-radius:18px;background:#242635;color:#f3f
 .mini-controls .skip-button.icon-button svg{width:24px;height:24px}
 .mini-controls .play-button svg{width:20px;height:20px}
 @media(max-width:720px){.controls{max-width:none;margin:12px 0}.controls .play-button{width:52px;min-width:52px;height:52px;min-height:52px}.mini-controls .icon-button:not(.mute-button){width:44px;min-width:44px}.mini-controls .play-button{width:46px;min-width:46px}}
+
+/* Queue and sleep timer stay secondary to the main transport controls. */
+.player-utilities{display:flex;gap:9px;margin-top:15px;flex-wrap:wrap}
+.player-utilities button,.queue-toolbar button,.queue-pages button,.sleep-input-row button,.sleep-cancel{min-height:40px;padding:8px 13px;border:1px solid var(--border);border-radius:11px;background:var(--surface-raised);color:#f1f3f3;font-size:13px}
+.player-utilities button:hover,.queue-toolbar button:hover,.queue-pages button:hover,.sleep-input-row button:hover,.sleep-cancel:hover{background:var(--border)}
+.player-utilities #sleep-badge{color:var(--accent)}
+.queue-dialog,.sleep-dialog{width:min(560px,calc(100% - 28px));padding:24px;max-height:calc(100dvh - 32px)}
+.queue-dialog[open]{display:flex;flex-direction:column;height:min(760px,calc(100dvh - 96px));max-height:calc(100dvh - 96px);overflow:hidden}
+.queue-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:16px 0 8px;color:#b8bbbf;font-size:13px}
+.queue-list{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-width:none}
+.queue-list::-webkit-scrollbar{display:none}
+.queue-track{display:flex;align-items:center;gap:14px;width:100%;min-height:59px;padding:9px 12px;border:0;border-top:1px solid var(--border);background:transparent;color:#f4f5f5;text-align:left}
+.queue-track:hover,.queue-track.current{background:var(--surface-raised)}
+.queue-track.current .queue-number{color:var(--accent)}
+.queue-number{width:30px;flex:none;text-align:center;color:#a9afb1;font-size:12px;font-variant-numeric:tabular-nums}
+.queue-info{display:flex;flex-direction:column;gap:4px;min-width:0}
+.queue-info strong,.queue-info small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.queue-info strong{font-size:14px;font-weight:600}.queue-info small{font-size:12px;color:#aeb3b5}
+.queue-pages{display:flex;gap:10px;margin-top:12px}.queue-pages button{flex:1}.queue-pages button[hidden]{display:none}
+.sleep-dialog p{margin:15px 0 18px}.sleep-dialog fieldset{border:1px solid var(--border);border-radius:13px;margin:12px 0;padding:13px 14px 15px}.sleep-dialog legend{padding:0 5px;color:#f2f3f3;font-size:14px;font-weight:600}
+.sleep-input-row{display:flex;align-items:center;gap:10px}.sleep-input-row input{min-width:0;flex:1;min-height:42px;padding:7px 10px;border:1px solid var(--border);border-radius:9px;background:var(--surface-deep);color:#f2f3f3;font:inherit;font-size:16px;color-scheme:dark}
+.sleep-input-row span{color:#b8bbbf;font-size:13px}.sleep-dialog small{display:block;margin-top:9px;color:#aeb3b5;font-size:12px}.sleep-cancel{width:100%;margin-top:5px}
+@media(max-width:720px){.player-utilities{margin-top:10px}.queue-dialog,.sleep-dialog{padding:18px}.queue-dialog[open]{height:min(590px,calc(100dvh - 160px - env(safe-area-inset-bottom)));max-height:calc(100dvh - 160px - env(safe-area-inset-bottom))}.queue-pages{padding-bottom:2px}}
+
+/* Queue actions sit beside the track, while pagination remains outside its scroll area. */
+.song-entry,.queue-entry{position:relative;display:flex;align-items:stretch;border-top:1px solid var(--border)}
+.song-entry .song,.queue-entry .queue-track{flex:1;min-width:0;border-top:0}
+.song-more-trigger,.queue-more-trigger{flex:none;align-self:center;min-width:44px;height:44px;margin:0 7px 0 0;border:0;border-radius:11px;background:transparent;color:#c4c8c9;font-size:22px;line-height:1;letter-spacing:2px}
+.song-more-trigger:hover,.queue-more-trigger:hover{background:var(--surface-raised);color:#fff}
+.queue-entry .queue-track{min-height:56px;padding:7px 6px}
+.queue-pages{flex:none;padding-top:4px}
+.action-dialog,.rooms-dialog{width:min(470px,calc(100% - 28px));max-height:calc(100dvh - 80px);overflow:auto;scrollbar-width:none}
+.action-dialog::-webkit-scrollbar,.rooms-dialog::-webkit-scrollbar{display:none}
+.action-dialog p{margin:15px 0 20px;overflow-wrap:anywhere}
+.action-options{display:grid;gap:9px}
+.action-options button,.room-row button,.room-group-action{min-height:44px;padding:9px 13px;border:1px solid var(--border);border-radius:11px;background:var(--surface-raised);color:#f3f5f5;text-align:left}
+.action-options button:hover,.room-row button:hover,.room-group-action:hover{background:var(--border)}
+.action-options .danger{color:#ffc3bc}
+.rooms-list{max-height:min(490px,50dvh);overflow:auto;scrollbar-width:none}
+.rooms-list::-webkit-scrollbar{display:none}
+.room-entry{padding:16px 2px;border-top:1px solid var(--border)}
+.room-row{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.room-entry small{display:block;margin:7px 0;color:#abb4b5}
+.room-entry label,#group-controls label{display:block;margin:12px 0 3px;color:#d5dada;font-size:13px}
+.room-entry input[type=range],#group-volume{width:100%;accent-color:var(--accent)}
+.room-group-action{margin-top:12px;width:100%}
+#group-controls{padding-top:12px;border-top:1px solid var(--border)}
+.player-utilities button[aria-pressed=true]{background:var(--accent);color:var(--page-bg);border-color:var(--accent)}
+@media(max-width:720px){.queue-dialog[open]{height:min(540px,calc(100dvh - 190px - env(safe-area-inset-bottom)));max-height:calc(100dvh - 190px - env(safe-area-inset-bottom))}.queue-entry .queue-track{min-height:52px}.song-more-trigger,.queue-more-trigger{margin-right:0}.queue-pages{padding-bottom:3px}}
 
 /* Surfaces follow the cover of the current song. The variables have a calm fallback. */
 :root{--page-bg:#181f21;--page-glow:#2b393b;--surface:#222b2d;--surface-deep:#1b2325;--surface-raised:#2b3638;--border:#415052;--accent:#a8c9c5;--control-bg:#ffffff12;--control-hover:#ffffff24}
@@ -143,6 +193,8 @@ body{background:radial-gradient(circle at 76% 0%,var(--page-glow),transparent 44
 .floating-actions button{background:var(--surface-raised);border-color:var(--border);color:var(--accent)}
 .floating-actions button:hover{background:var(--border)}
 dialog{background:var(--surface);border-color:var(--border)}
+/* Closing a nested dialog can return focus to its parent dialog on iOS Safari. */
+dialog:focus{outline:none}
 dialog::backdrop{background:#090d0dbb}
 #seek,.volume input,.mini-progress input,.mini-volume input{accent-color:var(--accent)}
 .player input[type=range]:focus-visible,.mini-player input[type=range]:focus-visible,.mute-button:focus-visible{outline-color:var(--accent)}
@@ -151,3 +203,182 @@ dialog::backdrop{background:#090d0dbb}
 .quick-search-dialog #quick-search-close{width:52px;height:52px;flex:none;border-radius:12px;font-size:34px;line-height:1}
 .quick-search-dialog #quick-search-close:hover{background:#393a4b}
 @media(max-width:720px){.search-wrap input{font-size:16px}.quick-search-dialog{max-width:calc(100vw - 28px);overflow-x:hidden}}
+
+/* A focused, album-tinted control sheet replaces the cramped four-button menu. */
+.player-utilities{align-items:center}
+.utilities-dialog{width:min(390px,calc(100vw - 32px));max-height:calc(100dvh - 32px);padding:0;border:1px solid #ffffff26;border-radius:25px;background:linear-gradient(155deg,color-mix(in srgb,var(--surface) 89%,white 11%),var(--surface-deep));box-shadow:0 26px 72px #0009;overflow:auto;scrollbar-width:none}
+.utilities-dialog::-webkit-scrollbar{display:none}
+.utilities-dialog::backdrop{background:#080b0dc4}
+.utility-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:22px 22px 15px}
+.utility-kicker{color:var(--accent);font-size:11px;font-weight:700;letter-spacing:.12em}
+.utility-head h2{margin:3px 0 0;color:#f7f8f8;font-size:23px;font-weight:700;letter-spacing:-.035em}
+.utility-close{width:44px;height:44px;flex:none;display:grid;place-items:center;border:0;border-radius:50%;background:#ffffff12;color:#eceff0}
+.utility-close svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round}
+.utility-close:hover{background:#ffffff22}
+.utilities-dialog.suppress-initial-focus .utility-close:focus{outline:none}
+.utility-group{padding:0 12px 10px}
+.utility-group-last{padding-top:9px;border-top:1px solid #ffffff16}
+.utility-group-label{padding:0 13px 5px;color:#b1b9bb;font-size:11px;font-weight:650;letter-spacing:.09em}
+.utility-action{display:flex;align-items:center;gap:12px;width:100%;min-height:65px;padding:9px 12px;border:0;border-radius:13px;background:transparent;color:#f4f6f6;text-align:left}
+.utility-action:hover,.utility-action:focus-visible{background:#ffffff13}
+.utility-action:active{background:#ffffff1d}
+.utility-icon{width:39px;height:39px;flex:none;display:grid;place-items:center;border-radius:12px;background:color-mix(in srgb,var(--accent) 15%,transparent);color:var(--accent)}
+.utility-icon svg{width:21px;height:21px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.utility-copy{display:flex;flex:1;flex-direction:column;gap:3px;min-width:0}
+.utility-copy strong{font-size:15px;font-weight:600;letter-spacing:-.01em}
+.utility-copy small{overflow:hidden;color:#b4bcbd;font-size:12px;text-overflow:ellipsis;white-space:nowrap}
+.utility-copy #sleep-badge{color:var(--accent)}
+.utility-switch{position:relative;width:41px;height:25px;flex:none;border-radius:20px;background:#ffffff2a;transition:background .18s ease}
+.utility-switch::before{content:"";position:absolute;top:3px;left:3px;width:19px;height:19px;border-radius:50%;background:#f9faf9;box-shadow:0 1px 4px #0004;transition:transform .18s ease}
+.utility-action[aria-pressed=true] .utility-switch{background:var(--accent)}
+.utility-action[aria-pressed=true] .utility-switch::before{transform:translateX(16px);background:var(--page-bg)}
+.utility-chevron{width:22px;flex:none;color:#aab2b3;font-size:27px;font-weight:300;line-height:1;text-align:center}
+@media(max-width:390px){.utility-head{padding:18px 18px 12px}.utility-action{min-height:60px}.utility-group{padding-bottom:7px}}
+@media(max-width:360px){.utility-action{gap:9px;min-height:64px;padding:8px 9px}.utility-icon{width:35px;height:35px}.utility-copy small{white-space:normal;line-height:1.25}}
+@media(prefers-reduced-motion:reduce){.utility-switch,.utility-switch::before{transition:none}}
+
+/* Safari can retain :active after a scroll gesture. Only show a pressed row while a mouse is used. */
+.song,.queue-track{-webkit-tap-highlight-color:transparent;touch-action:manipulation}
+@media(hover:hover){.song:active{background:var(--border)}}
+@media(hover:none),(pointer:coarse){
+  .song:hover,.song:focus,.song:focus-visible,.song:active{background:transparent;outline:none}
+  .queue-track:hover:not(.current),.queue-track:focus:not(.current),.queue-track:focus-visible:not(.current){background:transparent;outline:none}
+  .song.loading{background:var(--border)}
+}
+
+/* On iPhone, use the visual viewport rather than the full page behind the keyboard. */
+.quick-search-dialog[open]{position:fixed;left:0;right:0;margin:0 auto;max-height:calc(var(--visual-height,100dvh) - 28px)}
+.quick-search-results{max-height:calc(var(--visual-height,100dvh) - 210px)}
+@media(max-width:720px){
+  .quick-search-dialog[open]{width:calc(100vw - 28px);padding:18px;max-height:calc(var(--visual-height,100dvh) - 28px)}
+  .quick-search-results{max-height:calc(var(--visual-height,100dvh) - 196px)}
+}
+
+/* Cohesive content, chrome, and type hierarchy across the player and library. */
+:root{
+  --text-primary:#f7f9f9;
+  --text-secondary:#c5cecf;
+  --text-tertiary:#aeb9ba;
+  --hairline:#ffffff1c;
+  --card-edge:#ffffff1a;
+}
+body{background:radial-gradient(ellipse 85% 58% at 72% 0%,var(--page-glow),transparent 70%),linear-gradient(180deg,var(--surface-deep),var(--page-bg) 58%,var(--surface-deep));background-attachment:fixed;color:var(--text-primary)}
+.shell{max-width:1120px}
+.top{margin-bottom:24px}
+.brand{font-weight:700;letter-spacing:-.02em}
+.brand-mark{border-radius:10px;font-size:24px}
+.connection{border-color:var(--card-edge);color:var(--text-secondary)}
+.connection.ok{color:#c0eed6}
+.card{border-color:var(--card-edge);border-radius:25px;box-shadow:0 14px 44px #0002}
+.player{grid-template-columns:minmax(280px,370px) minmax(0,1fr);gap:42px;padding:32px;margin-bottom:22px}
+.player-art{width:100%;max-height:none;border-radius:18px;box-shadow:0 14px 32px #0004}
+h1{margin:14px 0 5px;line-height:1.12;font-weight:720}
+#track-artist{color:var(--text-secondary);font-size:17px}
+.eyebrow{font-size:11px;letter-spacing:.12em}
+.player-lyric{min-height:56px;padding:10px 12px;margin-bottom:14px;border-color:var(--hairline);border-radius:12px;background:#ffffff0a;color:var(--text-primary)}
+.player-lyric:hover{background:#ffffff15}
+#lyric-current{font-size:14px;font-weight:560}
+#lyric-next{font-size:12px;color:var(--text-tertiary)}
+.progress,.volume{color:var(--text-tertiary)}
+.progress{font-size:12px}
+.volume{font-size:13px}
+.controls{margin:18px 0 13px}
+.player-utilities{margin-top:18px;gap:9px}
+.player-utilities button{min-height:43px;padding:8px 14px;border-color:var(--card-edge);border-radius:12px;background:#ffffff0d;color:var(--text-primary);font-size:13px;font-weight:600}
+.player-utilities button:hover{background:#ffffff19}
+.library{padding:29px 32px 24px}
+.library h2{margin:6px 0 3px;font-size:28px;font-weight:720}
+.song-count{font-size:13px;color:var(--text-tertiary)}
+.library p{color:var(--text-secondary);font-size:14px}
+.refresh{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:43px;border-color:var(--card-edge);border-radius:12px;background:#ffffff0d;color:var(--text-primary);font-size:13px;font-weight:600}
+.refresh:hover{background:#ffffff19}
+.refresh svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+.search-wrap{height:50px;margin:22px 0 12px;border-color:var(--card-edge);border-radius:13px;background:#00000025;color:var(--text-tertiary);font-size:inherit}
+.search-wrap svg.search-icon{width:19px;height:19px;flex:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round}
+.search-wrap input{height:100%;font-size:16px}
+.search-wrap input::placeholder{color:var(--text-tertiary)}
+.search-wrap:focus-within{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 16%,transparent)}
+.list-state{min-height:25px;color:var(--text-tertiary);font-size:13px}
+.song-entry,.queue-entry{border-top-color:var(--hairline)}
+.song{min-height:67px}
+.song-name{color:var(--text-primary);font-size:15px;font-weight:600;line-height:1.3}
+.song-sub,.song-album,.song-duration{color:var(--text-tertiary);font-size:13px}
+.song-more-trigger,.queue-more-trigger{color:var(--text-secondary)}
+.song-more-trigger:hover,.queue-more-trigger:hover{background:#ffffff12}
+.mini-player{background:color-mix(in srgb,var(--surface-deep) 94%,black 6%);border-bottom:1px solid var(--hairline)}
+.mini-track strong{color:var(--text-primary)}
+.mini-lyric{color:var(--text-secondary)}
+.mini-volume,.mini-progress{color:var(--text-tertiary)}
+.floating-actions button{width:46px;height:46px;border:1px solid var(--card-edge);border-radius:50%;background:color-mix(in srgb,var(--surface) 92%,black 8%);color:var(--text-primary);box-shadow:0 6px 18px #0005;backdrop-filter:none}
+.floating-actions button:hover{background:var(--surface-raised)}
+dialog:not(.utilities-dialog){border:1px solid var(--card-edge);border-radius:24px;background:linear-gradient(155deg,var(--surface),var(--surface-deep));box-shadow:0 26px 70px #0009}
+dialog .dialog-head h2{font-weight:700;letter-spacing:-.03em}
+dialog p{color:var(--text-secondary)}
+.action-options button,.queue-toolbar button,.queue-pages button,.sleep-input-row button,.sleep-cancel,.room-row button,.room-group-action{border-color:var(--card-edge);background:#ffffff0d;color:var(--text-primary)}
+.action-options button:hover,.queue-toolbar button:hover,.queue-pages button:hover,.sleep-input-row button:hover,.sleep-cancel:hover,.room-row button:hover,.room-group-action:hover{background:#ffffff19}
+.queue-track{border-top-color:var(--hairline)}
+.queue-info strong{font-size:15px}
+.queue-info small{color:var(--text-tertiary);font-size:13px}
+.queue-toolbar,.queue-number{color:var(--text-tertiary)}
+.lyric-line{color:var(--text-tertiary)}
+.lyrics-list{scrollbar-width:none}
+.lyrics-list::-webkit-scrollbar{display:none}
+button:focus-visible,input:focus-visible,textarea:focus-visible,summary:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.search-wrap input:focus-visible{outline:none}
+
+@media(max-width:720px){
+  .shell{padding:16px 14px max(40px,env(safe-area-inset-bottom))}
+  .top{margin-bottom:16px}
+  .brand{font-size:16px}
+  .player{padding:18px;margin-bottom:15px}
+  .player-art{aspect-ratio:1;max-height:none;border-radius:17px}
+  .player-main{padding:19px 2px 0}
+  h1{margin:10px 0 5px;font-size:29px}
+  #track-artist{margin-bottom:12px;font-size:16px}
+  .player-lyric{margin-bottom:13px}
+  .controls{margin:11px 0 9px}
+  .player-utilities{margin-top:10px}
+  .player-utilities button{min-height:44px;font-size:13px}
+  .library{padding:21px 17px 18px}
+  .library h2{font-size:25px}
+  .library p{font-size:13px}
+  .refresh{min-height:42px;padding:8px 10px;font-size:12px}
+  .refresh svg{width:16px;height:16px}
+  .search-wrap{height:48px;margin:19px 0 10px}
+  .song{min-height:70px}
+  .song-name{font-size:16px}
+  .song-sub{font-size:14px}
+  .song-index{color:var(--text-tertiary);font-size:12px}
+  .song-more-trigger,.queue-more-trigger{min-width:44px;height:44px}
+  .mini-player{padding:calc(6px + env(safe-area-inset-top)) 14px 5px}
+  .mini-main{grid-template-columns:44px minmax(0,1fr);gap:3px 9px}
+  .mini-cover{width:44px;height:44px;border-radius:10px}
+  .mini-track{gap:3px}
+  .mini-song strong{font-size:14px}
+  .mini-lyric{font-size:12px}
+  .mini-controls{grid-column:1/-1;min-height:44px;padding:0}
+  .mini-volume{grid-column:1/-1;height:25px}
+  .mini-volume input{height:25px}
+  .mini-progress{height:22px;margin-top:1px}
+  .floating-actions{right:14px;bottom:max(20px,env(safe-area-inset-bottom) + 12px)}
+}
+@media(max-width:390px){.library-head{display:block}.head-actions{justify-content:flex-end;margin-top:12px}.head-actions .refresh{flex:none}.song{min-height:68px}.song-name{font-size:15px}}
+@media(max-width:360px){.controls .icon-button{width:44px;min-width:44px;height:44px;min-height:44px}.controls .play-button{width:50px;min-width:50px;height:50px;min-height:50px}}
+@media(hover:none),(pointer:coarse){.song:focus-visible,.queue-track:focus-visible{outline:none}}
+@media(prefers-reduced-transparency:reduce){.mini-player,.floating-actions button{background:var(--surface-deep)}}
+@media(prefers-contrast:more){:root{--hairline:#ffffff3a;--card-edge:#ffffff5a} .song-sub,.song-album,.song-duration,.list-state{color:#e5eeee}}
+
+/* One quiet close affordance for every sheet and dialog. */
+button.close,button.utility-close,.quick-search-dialog #quick-search-close{position:relative;display:grid;place-items:center;flex:none;width:44px;height:44px;margin:0;padding:0;border:0;border-radius:50%;background:transparent;color:var(--text-primary);font-size:0;line-height:1}
+button.close::before,button.close::after,button.utility-close::before,button.utility-close::after{position:absolute;width:18px;height:2px;border-radius:999px;background:currentColor;content:""}
+button.close::before,button.utility-close::before{transform:rotate(45deg)}
+button.close::after,button.utility-close::after{transform:rotate(-45deg)}
+button.utility-close svg{display:none}
+@media(hover:hover){button.close:hover,button.utility-close:hover{background:#ffffff12}}
+button.close:focus-visible,button.utility-close:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.suppress-initial-focus button.close:focus,.suppress-initial-focus button.utility-close:focus{outline:none}
+
+/* iOS Safari can retain touch hover after transport controls are activated. */
+@media(hover:none),(pointer:coarse){
+  .controls .icon-button:not(.active),.mini-controls .icon-button:not(.mute-button):not(.active),#mute.icon-button:not(.active),#mini-mute.icon-button:not(.active){background:transparent;color:var(--text-primary)}
+}
