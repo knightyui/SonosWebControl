@@ -2,7 +2,8 @@ import http from 'node:http';
 import {readFile} from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {beginQr,loadSession,pollQr,saveSession,sessionCookie,sessionState} from './qq-session.mjs';
+import {beginQr,loadSession,pollQr,saveSelectedPlaylist,saveSession,selectSession,selectedPlaylist,sessionCookie,sessionState} from './qq-session.mjs';
+import {clearPlayHistory,loadPlayHistory,recentPlays,recordPlay} from './play-history.mjs';
 
 const ip=process.env.SONOS_IP;
 if(!ip)throw Error('请设置 SONOS_IP，例如 SONOS_IP=192.168.x.x npm start。');
@@ -47,21 +48,66 @@ async function browse(id,start=0,count=200,target=base){
 }
 const items=x=>[...x.matchAll(/<item\b[^>]*>[\s\S]*?<\/item>/g)].map(m=>m[0]);
 let cached;
+let selectedPlaylistId='liked';
+let playlistCatalog;
 const lyricsCache=new Map();
 const albumMidCache=new Map();
+const searchedSongs=new Map();
+const searchedSongById=id=>[...searchedSongs.values()].find(song=>song.id===Number(id));
 await loadSession();
+await loadPlayHistory();
+selectedPlaylistId=selectedPlaylist();
+const historyAccount=()=>sessionState().active||'local';
+const qqUin=()=>{const value=sessionCookie(),uin=/(?:^|;)\s*uin=o?(\d+)/.exec(value)?.[1];return uin&&uin!=='0'?uin:/(?:^|;)\s*wxuin=(\d+)/.exec(value)?.[1]||uin||'0';};
+const qqHeaders=()=>({Referer:'https://y.qq.com/',...(sessionCookie()?{Cookie:sessionCookie()}:{})});
+async function qqGet(endpoint,params){
+  const url=new URL(endpoint);url.search=new URLSearchParams({...params,format:'json',g_tk:'5381',loginUin:qqUin(),hostUin:'0',inCharset:'utf8',outCharset:'utf-8',platform:'yqq'}).toString();
+  const response=await fetch(url,{headers:qqHeaders(),signal:AbortSignal.timeout(15000)});
+  if(!response.ok)throw Error(`QQ 音乐请求失败：${response.status}`);
+  return response.json();
+}
+async function playlistPage(id,start,count){
+  const response=await fetch('https://u.y.qq.com/cgi-bin/musicu.fcg',{method:'POST',headers:{...qqHeaders(),'Content-Type':'application/json'},body:JSON.stringify({comm:{ct:24,cv:4747474,platform:'yqq.json',uin:qqUin(),g_tk:5381,format:'json'},req_0:{module:'music.srfDissInfo.DissInfo',method:'CgiGetDiss',param:{disstid:id==='liked'?0:Number(id),dirid:id==='liked'?201:0,tag:true,song_begin:start,song_num:count,userinfo:true,orderlist:true}}}),signal:AbortSignal.timeout(15000)});
+  if(!response.ok)throw Error(`QQ 音乐请求失败：${response.status}`);
+  const result=(await response.json()).req_0;
+  if(result?.code!==0||result.data?.code!==0||!Array.isArray(result.data?.songlist))throw Error('QQ 音乐登录已失效，或当前歌单不可用。请重新登录。');
+  return result.data;
+}
+async function playlists(refresh=false){
+  if(playlistCatalog&&!refresh&&Date.now()-playlistCatalog.at<1800000)return playlistCatalog.list;
+  if(!sessionCookie())throw Error('请先在 Mac 本机登录 QQ 音乐。');
+  const [liked,createdList,collectedList]=await Promise.all([
+    playlistPage('liked',0,1),
+    (async()=>{const result=[];for(let start=0;start<1000;start+=200){const page=await qqGet('https://c.y.qq.com/rsc/fcgi-bin/fcg_user_created_diss',{hostuin:qqUin(),sin:start,size:200});if(page.code!==0||!Array.isArray(page.data?.disslist))throw Error('QQ 音乐没有返回自建歌单。');result.push(...page.data.disslist);if(page.data.disslist.length<200)break;}return result;})(),
+    (async()=>{const result=[];for(let start=0;start<1000;start+=200){const page=await qqGet('https://c.y.qq.com/fav/fcgi-bin/fcg_get_profile_order_asset.fcg',{ct:20,cv:4747474,cid:205360956,userid:qqUin(),reqtype:3,sin:start,ein:start+199});if(page.code!==0||!Array.isArray(page.data?.cdlist))throw Error('QQ 音乐没有返回收藏歌单。');result.push(...page.data.cdlist);if(page.data.cdlist.length<200)break;}return result;})()
+  ]);
+  const list=[{id:'liked',title:'我喜欢',count:Number(liked.total_song_num||liked.dirinfo?.songnum||0),source:'liked'}];
+  const seen=new Set(['liked']);
+  for(const item of createdList){const id=String(item.tid||'');if(!/^\d+$/.test(id)||seen.has(id))continue;seen.add(id);list.push({id,title:item.diss_name||'未命名歌单',count:Number(item.song_cnt||0),source:'created'});}
+  for(const item of collectedList){const id=String(item.dissid||'');if(!/^\d+$/.test(id)||seen.has(id))continue;seen.add(id);list.push({id,title:item.dissname||'未命名歌单',count:Number(item.songnum||0),source:'collected'});}
+  if(!list.some(item=>item.id===selectedPlaylistId)){selectedPlaylistId='liked';await saveSelectedPlaylist('liked');}
+  playlistCatalog={list,at:Date.now()};return list;
+}
+const mapSong=(s,i)=>({index:i+1,id:Number(s.songid||s.id),mid:String(s.songmid||s.mid||''),title:s.songname||s.name||'',artist:(s.singer||[]).map(a=>a.name).join('、'),album:s.albumname||s.album?.name||'',albumMid:String(s.albummid||s.album?.mid||''),duration:Number(s.interval||0)});
 async function playlist(refresh=false){
-  if(cached&&!refresh&&Date.now()-cached.at<1800000)return cached;
-  const fav=items((await browse('FV:2',0,500)).xml).find(x=>tag(x,'title').includes('我喜欢')&&x.includes('PLAYLIST_FAV'));
-  const id=fav&&/PLAYLIST_FAV(?:%3[aA]|:)(\d+)/.exec(fav)?.[1]; if(!id)throw Error('Sonos 收藏中未找到 QQ 音乐“我喜欢”歌单。');
-  const url=new URL('https://c.y.qq.com/qzone/fcg-bin/fcg_ucc_getcdinfo_byids_cp.fcg');
-  const loginUin=/(?:^|;)\s*uin=o?(\d+)/.exec(sessionCookie())?.[1]||'0';
-  url.search=new URLSearchParams({type:'1',json:'1',utf8:'1',onlysong:'0',disstid:id,format:'json',g_tk:'5381',loginUin,hostUin:'0',inCharset:'utf8',outCharset:'utf-8',platform:'yqq',needNewCode:'0'}).toString();
-  const headers={Referer:'https://y.qq.com/'};if(sessionCookie())headers.Cookie=sessionCookie();
-  const r=await fetch(url,{headers,signal:AbortSignal.timeout(15000)}); if(!r.ok)throw Error(`QQ 音乐请求失败：${r.status}`);
-  const data=await r.json(); if(data.code!==0||!Array.isArray(data.cdlist?.[0]?.songlist))throw Error('QQ 音乐没有返回可用的歌单数据。请在 Mac 上重新登录后重试。');
-  const songs=data.cdlist[0].songlist.map((s,i)=>({index:i+1,id:Number(s.songid||s.id),mid:String(s.songmid||s.mid||''),title:s.songname||s.name||'',artist:(s.singer||[]).map(a=>a.name).join('、'),album:s.albumname||'',albumMid:String(s.albummid||s.album?.mid||''),duration:Number(s.interval||0)})).filter(s=>s.id&&s.mid);
-  cached={id,title:'我喜欢',songs,at:Date.now()}; return cached;
+  if(cached&&cached.id===selectedPlaylistId&&!refresh&&Date.now()-cached.at<1800000)return cached;
+  const catalog=await playlists(refresh),entry=catalog.find(x=>x.id===selectedPlaylistId);
+  if(!entry)throw Error('当前歌单不属于所选 QQ 音乐账号，请重新选择。');
+  const first=await playlistPage(entry.id,0,200),total=Number(first.total_song_num||0),all=[...first.songlist];
+  for(let start=all.length;start<total&&start<10000;start+=200){const page=await playlistPage(entry.id,start,200);if(!page.songlist.length)break;all.push(...page.songlist);}
+  const songs=all.map(mapSong).filter(s=>s.id&&s.mid);
+  cached={id:entry.id,title:entry.title,songs,at:Date.now()};return cached;
+}
+async function searchSongs(query){
+  const q=String(query||'').trim();if(q.length<2||q.length>80)throw Error('请输入 2 到 80 个字搜索歌曲。');
+  const response=await fetch('https://u.y.qq.com/cgi-bin/musicu.fcg',{method:'POST',headers:{'Content-Type':'application/json',Referer:'https://y.qq.com/'},body:JSON.stringify({req_0:{module:'music.search.SearchCgiService',method:'DoSearchForQQMusicDesktop',param:{search_type:0,query:q,page_num:1,num_per_page:30}}}),signal:AbortSignal.timeout(15000)});
+  if(!response.ok)throw Error(`QQ 音乐搜索失败：${response.status}`);
+  const block=(await response.json()).req_0;
+  if(block?.code!==0||block.data?.code!==0||!Array.isArray(block.data?.body?.song?.list))throw Error('QQ 音乐搜索暂不可用。');
+  const songs=block.data.body.song.list.map(mapSong).filter(song=>song.id&&song.mid);
+  for(const song of songs)searchedSongs.set(song.mid,{...song,at:Date.now()});
+  while(searchedSongs.size>300)searchedSongs.delete(searchedSongs.keys().next().value);
+  return {songs,total:Number(block.data.meta?.sum||songs.length)};
 }
 async function qqAlbumMid(id){
   const previous=albumMidCache.get(id);
@@ -91,7 +137,7 @@ function parseLyrics(source){
 async function lyricsForSong(id){
   const cachedLyrics=lyricsCache.get(id);
   if(cachedLyrics&&Date.now()-cachedLyrics.at<1800000)return cachedLyrics.data;
-  let mid=cached?.songs.find(song=>song.id===Number(id))?.mid;
+  let mid=cached?.songs.find(song=>song.id===Number(id))?.mid||searchedSongById(id)?.mid;
   const headers={Referer:'https://y.qq.com/'};
   if(sessionCookie())headers.Cookie=sessionCookie();
   if(!mid){
@@ -125,25 +171,106 @@ async function queueTrack(target,id){
   }
   return null;
 }
-async function enqueueSong(target,song,asNext){
+async function qqQueueContext(target){
     const fav=items((await browse('FV:2',0,500)).xml).find(x=>tag(x,'title').includes('我喜欢')&&x.includes('PLAYLIST_FAV'));
-    const res=fav&&tag(fav,'res'), sid=/[?&]sid=(\d+)/.exec(res)?.[1]||'23';
-    const queueSample=(await browse('Q:0',0,1,target)).xml;
-    const sn=/x-sonos-http:[^<]*[?&]sn=(\d+)/.exec(queueSample)?.[1]||'6';
+    const favoriteUri=fav?tag(fav,'res'):'';
+    const currentUri=tag(await soap('AVTransport','GetPositionInfo',{InstanceID:0},target),'TrackURI');
+    const currentQQ=currentUri.startsWith('x-sonos-http:SONG')?currentUri:'';
+    let queueUri='';
+    if(!currentQQ){const queue=await browse('Q:0',0,200,target);queueUri=items(queue.xml).map(item=>tag(item,'res')).find(uri=>uri.startsWith('x-sonos-http:SONG')&&/[?&]sn=\d+/.test(uri))||'';}
+    const source=currentQQ||queueUri||favoriteUri;
+    const sid=/[?&]sid=(\d+)/.exec(source)?.[1]||/[?&]sid=(\d+)/.exec(favoriteUri)?.[1];
+    const sn=/[?&]sn=(\d+)/.exec(source)?.[1]||/[?&]sn=(\d+)/.exec(favoriteUri)?.[1];
+    if(!sid||!sn)throw Error('Sonos 中找不到 QQ 音乐播放账号。请先在 Sonos App 中播放一首 QQ 音乐歌曲，或将 QQ 歌单加入 Sonos 收藏。');
+    return {sid,sn};
+}
+async function enqueueSong(target,song,asNext,context,position=0){
+    const {sid,sn}=context||await qqQueueContext(target);
     const uri=`x-sonos-http:SONG%3a${song.id}%3aST.mp4?sid=${sid}&flags=8232&sn=${sn}`;
     const metadata=`<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"><item id="SONG:${song.id}:ST" parentID="" restricted="true"><dc:title>${enc(song.title)}</dc:title><dc:creator>${enc(song.artist)}</dc:creator><upnp:album>${enc(song.album)}</upnp:album><upnp:class>object.item.audioItem.musicTrack</upnp:class><res protocolInfo="sonos.com-http:*:audio/mp4:*">${enc(uri)}</res></item></DIDL-Lite>`;
-    const number=tag(await soap('AVTransport','AddURIToQueue',{InstanceID:0,EnqueuedURI:uri,EnqueuedURIMetaData:metadata,DesiredFirstTrackNumberEnqueued:0,EnqueueAsNext:asNext?1:0},target),'FirstTrackNumberEnqueued');
+    const number=tag(await soap('AVTransport','AddURIToQueue',{InstanceID:0,EnqueuedURI:uri,EnqueuedURIMetaData:metadata,DesiredFirstTrackNumberEnqueued:position,EnqueueAsNext:asNext?1:0},target),'FirstTrackNumberEnqueued');
     if(!number||number==='0')throw Error('已添加到队列，但 Sonos 未返回曲目位置。');
     return Number(number);
 }
-async function songByMid(mid){const list=await playlist(),song=list.songs.find(s=>s.mid===mid);if(!song)throw Error('歌曲不在当前歌单中，请刷新歌单。');return song;}
+async function songByMid(mid){
+  const found=searchedSongs.get(mid);
+  if(found&&Date.now()-found.at<1800000)return found;
+  const previous=recentPlays(historyAccount()).find(song=>song.mid===mid);
+  if(previous)return previous;
+  const list=await playlist(),song=list.songs.find(s=>s.mid===mid);
+  if(!song)throw Error('歌曲不在当前歌单或近期搜索结果中，请重新搜索。');
+  return song;
+}
 async function playSong(mid,roomId){
   const song=await songByMid(mid),{target}=await coordinator(roomId);
   let number=await queueTrack(target,song.id);
-  if(!number)number=await enqueueSong(target,song,false);
+  if(!number){
+    await enqueueSong(target,song,false);
+    number=await queueTrack(target,song.id);
+    if(!number)throw Error('歌曲已加入 Sonos 队列，但无法定位播放位置。请刷新队列后重试。');
+  }
   await soap('AVTransport','Seek',{InstanceID:0,Unit:'TRACK_NR',Target:number},target);
   await soap('AVTransport','Play',{InstanceID:0,Speed:1},target);
   return {title:song.title,artist:song.artist,queueNumber:Number(number)};
+}
+const queueImports=new Map();
+const visibleQueueImport=job=>job&&!(job.phase==='complete'&&Date.now()-job.finishedAt>15000)?{phase:job.phase,title:job.title,selectedTitle:job.selectedTitle,added:job.added,total:job.total,error:job.error||''}:null;
+async function assertQueueIdle(roomId){
+  const {target}=await coordinator(roomId);
+  if(['preparing','building'].includes(queueImports.get(target)?.phase))throw Error('歌单正在后台导入队列，请稍后再修改队列。');
+}
+async function enqueueDuringImport(target,song,context,position,expectedTotal){
+  for(let attempt=0;attempt<3;attempt++){
+    try{return await enqueueSong(target,song,false,context,position);}
+    catch(error){
+      const total=(await browse('Q:0',0,1,target)).total;
+      if(total===expectedTotal+1)return;
+      if(total!==expectedTotal||attempt===2)throw error;
+    }
+  }
+}
+async function startPlaylistPlayback(input,roomId){
+  const list=await playlist();
+  if(String(input.playlistId)!==list.id)throw Error('歌单已切换，请刷新后重新选择歌曲。');
+  const index=Number(input.index)-1,song=list.songs[index];
+  if(!song||song.mid!==String(input.mid||''))throw Error('歌曲与当前歌单不一致，请刷新后重试。');
+  const {target,coordinatorId}=await coordinator(roomId);
+  if(['preparing','building'].includes(queueImports.get(target)?.phase))throw Error('正在导入歌单，请等待当前队列完成。');
+  const job={phase:'preparing',title:list.title,selectedTitle:song.title,added:0,total:list.songs.length,error:''};
+  queueImports.set(target,job);
+  let originalMode='';
+  try{
+    const context=await qqQueueContext(target);
+    originalMode=tag(await soap('AVTransport','GetTransportSettings',{InstanceID:0},target),'PlayMode');
+    if(originalMode&&originalMode!=='NORMAL')await soap('AVTransport','SetPlayMode',{InstanceID:0,NewPlayMode:'NORMAL'},target);
+    await soap('AVTransport','RemoveAllTracksFromQueue',{InstanceID:0},target);
+    await enqueueSong(target,song,false,context);
+    await soap('AVTransport','SetAVTransportURI',{InstanceID:0,CurrentURI:`x-rincon-queue:${coordinatorId}#0`,CurrentURIMetaData:''},target);
+    await soap('AVTransport','Seek',{InstanceID:0,Unit:'TRACK_NR',Target:1},target);
+    await soap('AVTransport','Play',{InstanceID:0,Speed:1},target);
+    job.phase='building';job.added=1;
+    void (async()=>{
+      try{
+        for(let i=index+1;i<list.songs.length;i++){
+          await enqueueDuringImport(target,list.songs[i],context,0,job.added);
+          job.added++;
+        }
+        for(let i=index-1;i>=0;i--){
+          await enqueueDuringImport(target,list.songs[i],context,1,job.added);
+          job.added++;
+        }
+        const actual=(await browse('Q:0',0,1,target)).total;
+        if(actual!==job.total)throw Error(`队列曲目数不一致：Sonos 返回 ${actual} 首。`);
+        job.phase='complete';job.finishedAt=Date.now();
+      }catch(error){job.phase='error';job.error=`已导入 ${job.added}/${job.total} 首；${error.message}`;console.error('歌单队列导入失败',error);}
+      finally{if(originalMode&&originalMode!=='NORMAL')try{await soap('AVTransport','SetPlayMode',{InstanceID:0,NewPlayMode:originalMode},target);}catch(error){job.phase='error';job.error=`${job.error||'队列已导入'}；恢复播放模式失败：${error.message}`;}}
+    })();
+    return {title:song.title,artist:song.artist,queueNumber:1,import:visibleQueueImport(job)};
+  }catch(error){
+    job.phase='error';job.error=error.message;
+    if(originalMode&&originalMode!=='NORMAL')try{await soap('AVTransport','SetPlayMode',{InstanceID:0,NewPlayMode:originalMode},target);}catch{}
+    throw error;
+  }
 }
 async function addSongToQueue(mid,placement,roomId){
   if(!['next','end'].includes(placement))throw Error('加入队列的位置无效。');
@@ -156,12 +283,13 @@ async function queuePage(start=0,roomId){
   let page=await browse('Q:0',start,100,target);
   if(page.total&&start>=page.total){start=Math.floor((page.total-1)/100)*100;page=await browse('Q:0',start,100,target);}
   let songLookup=new Map(cached?.songs.map(song=>[song.id,song])||[]);
+  for(const song of searchedSongs.values())if(!songLookup.has(song.id))songLookup.set(song.id,song);
   if(!songLookup.size){try{songLookup=new Map((await playlist()).songs.map(song=>[song.id,song]));}catch{}}
   const tracks=items(page.xml).map(item=>{
     const number=Number(/Q:0\/(\d+)/.exec(attr(item,'id'))?.[1]||0);
     const songId=Number(/SONG(?:%3[aA]|:)(\d+)(?:(?:%3[aA]|:)|\.)/.exec(tag(item,'res'))?.[1]||0);
     const song=songLookup.get(songId);
-    return {number,songId,title:tag(item,'title')||song?.title||'未知歌曲',artist:tag(item,'creator')||song?.artist||'',album:tag(item,'album')||song?.album||''};
+    return {number,songId,title:tag(item,'title')||song?.title||'未知歌曲',artist:tag(item,'creator')||song?.artist||'',album:tag(item,'album')||song?.album||'',albumMid:song?.albumMid||''};
   }).filter(track=>track.number);
   return {tracks,total:page.total,start};
 }
@@ -251,7 +379,7 @@ async function status(roomId){
   const uri=tag(position,'TrackURI'),songId=Number(/SONG(?:%3[aA]|:)(\d+)(?:(?:%3[aA]|:)|\.)/.exec(uri)?.[1]||0);
   let title=tag(metadata,'title'),artist=tag(metadata,'creator'),album=tag(metadata,'album'),duration=tag(position,'TrackDuration');
   if(songId&&(!title||!artist||!albumArt||!duration||duration==='0:00:00')){
-    let song=cached?.songs.find(s=>s.id===songId);
+    let song=cached?.songs.find(s=>s.id===songId)||searchedSongById(songId);
     if(!song){try{song=(await playlist()).songs.find(s=>s.id===songId);}catch{}}
     if(song){
       title||=song.title;artist||=song.artist;album||=song.album;
@@ -302,6 +430,8 @@ const send=(res,code,value)=>{res.writeHead(code,{'Content-Type':'application/js
 async function requestBody(req){let raw='';for await(const chunk of req){raw+=chunk;if(raw.length>20000)throw Error('请求太大。');}return JSON.parse(raw||'{}');}
 const isLocal=req=>['127.0.0.1','::1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress);
 const localWrite=req=>isLocal(req)&&(!req.headers.origin||[`http://localhost:${port}`,`http://127.0.0.1:${port}`].includes(req.headers.origin));
+const isLan=req=>isLocal(req)||(()=>{const address=(req.socket.remoteAddress||'').replace(/^::ffff:/,'');if(/^10\.|^192\.168\./.test(address))return true;const match=address.match(/^172\.(\d+)\./);return !!match&&Number(match[1])>=16&&Number(match[1])<=31;})();
+const qrWrite=req=>{if(!isLan(req))return false;const host=req.headers.host;if(!host)return false;const origin=req.headers.origin||req.headers.referer;if(!origin)return isLocal(req);try{return new URL(origin).host===host&&new URL(origin).protocol==='http:';}catch{return false;}};
 http.createServer(async(req,res)=>{try{
   const requestUrl=new URL(req.url,`http://${req.headers.host||'localhost'}`),pathname=requestUrl.pathname,roomId=requestUrl.searchParams.get('room')||undefined;
   if(req.method==='GET'&&pathname==='/api/status')return send(res,200,await status(roomId));
@@ -312,12 +442,15 @@ http.createServer(async(req,res)=>{try{
     if(!Number.isInteger(start)||start<0||start>10000)return send(res,400,{error:'队列位置无效。'});
     return send(res,200,await queuePage(start,roomId));
   }
-  if(req.method==='POST'&&pathname==='/api/queue/play'){
-    const body=await requestBody(req);await playQueueTrack(Number(body.number),roomId);return send(res,200,{ok:true});
+  if(req.method==='GET'&&pathname==='/api/queue/import'){
+    const {target}=await coordinator(roomId);return send(res,200,{import:visibleQueueImport(queueImports.get(target))});
   }
-  if(req.method==='POST'&&pathname==='/api/queue/edit'){await editQueue(await requestBody(req),roomId);return send(res,200,{ok:true});}
+  if(req.method==='POST'&&pathname==='/api/queue/play'){
+    await assertQueueIdle(roomId);const body=await requestBody(req);await playQueueTrack(Number(body.number),roomId);return send(res,200,{ok:true});
+  }
+  if(req.method==='POST'&&pathname==='/api/queue/edit'){await assertQueueIdle(roomId);await editQueue(await requestBody(req),roomId);return send(res,200,{ok:true});}
   if(req.method==='POST'&&pathname==='/api/queue/add'){
-    const body=await requestBody(req);return send(res,200,{ok:true,...await addSongToQueue(String(body.mid||''),body.placement,roomId)});
+    await assertQueueIdle(roomId);const body=await requestBody(req);return send(res,200,{ok:true,...await addSongToQueue(String(body.mid||''),body.placement,roomId)});
   }
   if(req.method==='GET'&&pathname==='/api/sleep')return send(res,200,await sleepStatus(roomId));
   if(req.method==='POST'&&pathname==='/api/sleep')return send(res,200,await setSleepTimer(await requestBody(req),roomId));
@@ -349,14 +482,33 @@ http.createServer(async(req,res)=>{try{
     if(data.length>5_000_000)throw Error('专辑封面文件过大。');
     res.writeHead(200,{'Content-Type':type,'Cache-Control':'private, max-age=3600'});res.end(data);return;
   }
-  if(req.method==='GET'&&pathname==='/api/qq/session')return send(res,200,{...sessionState(),local:isLocal(req)});
-  if(pathname.startsWith('/api/qq/login/')&&!localWrite(req))return send(res,403,{error:'请在 Mac 本机打开 localhost 登录 QQ 音乐。'});
+  if(req.method==='GET'&&pathname==='/api/qq/session')return send(res,200,{...sessionState(),local:isLocal(req),canQrLogin:isLan(req)});
+  if(req.method==='POST'&&pathname==='/api/qq/session/select'){
+    const body=await requestBody(req);await selectSession(String(body.id||''));cached=null;playlistCatalog=null;selectedPlaylistId=selectedPlaylist();return send(res,200,sessionState());
+  }
+  if(pathname==='/api/qq/login/cookie'&&!localWrite(req))return send(res,403,{error:'请在 Mac 本机打开 localhost 导入 Cookie。'});
+  if(['/api/qq/login/qr','/api/qq/login/poll'].includes(pathname)&&!qrWrite(req))return send(res,403,{error:'请从同一局域网的网页打开 QQ 音乐扫码登录。'});
   if(req.method==='POST'&&pathname==='/api/qq/login/qr')return send(res,200,await beginQr());
-  if(req.method==='GET'&&pathname==='/api/qq/login/poll')return send(res,200,await pollQr());
-  if(req.method==='POST'&&pathname==='/api/qq/login/cookie'){const b=await requestBody(req);await saveSession(b.cookie);cached=null;return send(res,200,{ok:true});}
+  if(req.method==='GET'&&pathname==='/api/qq/login/poll'){const result=await pollQr();if(result.state==='connected'){cached=null;playlistCatalog=null;selectedPlaylistId=selectedPlaylist();}return send(res,200,result);}
+  if(req.method==='POST'&&pathname==='/api/qq/login/cookie'){const b=await requestBody(req);await saveSession(b.cookie);cached=null;playlistCatalog=null;selectedPlaylistId=selectedPlaylist();return send(res,200,{ok:true});}
+  if(req.method==='GET'&&pathname==='/api/playlists')return send(res,200,{playlists:await playlists(requestUrl.searchParams.has('refresh')),selectedId:selectedPlaylistId});
+  if(req.method==='GET'&&pathname==='/api/history')return send(res,200,{songs:recentPlays(historyAccount()).map((song,index)=>({...song,index:index+1}))});
+  if(req.method==='POST'&&pathname==='/api/history/record'){
+    const body=await requestBody(req),song=await songByMid(String(body.mid||'')),current=await status(roomId);
+    if(!current.playing||current.songId!==song.id)return send(res,409,{error:'音箱尚未确认播放这首歌。'});
+    await recordPlay(historyAccount(),song);return send(res,200,{ok:true});
+  }
+  if(req.method==='DELETE'&&pathname==='/api/history'){await clearPlayHistory(historyAccount());return send(res,200,{ok:true});}
+  if(req.method==='GET'&&pathname==='/api/search')return send(res,200,await searchSongs(requestUrl.searchParams.get('q')));
+  if(req.method==='POST'&&pathname==='/api/playlists/select'){
+    const body=await requestBody(req),id=String(body.id||'');
+    if(!(await playlists()).some(item=>item.id===id))return send(res,400,{error:'歌单不属于当前 QQ 音乐账号。'});
+    await saveSelectedPlaylist(id);selectedPlaylistId=id;cached=null;return send(res,200,{selectedId:id});
+  }
   if(req.method==='GET'&&pathname==='/api/playlist'){const p=await playlist(new URL(req.url,`http://${req.headers.host||'localhost'}`).searchParams.has('refresh'));return send(res,200,{id:p.id,title:p.title,songs:p.songs,updatedAt:new Date(p.at).toISOString()});}
   if(req.method==='POST'&&pathname==='/api/control'){const b=await requestBody(req);await control(b.action,b.value,roomId);return send(res,200,{ok:true});}
-  if(req.method==='POST'&&pathname==='/api/play'){const b=await requestBody(req);return send(res,200,{ok:true,...await playSong(String(b.mid||''),roomId)});}
+  if(req.method==='POST'&&pathname==='/api/play'){await assertQueueIdle(roomId);const b=await requestBody(req);return send(res,200,{ok:true,...await playSong(String(b.mid||''),roomId)});}
+  if(req.method==='POST'&&pathname==='/api/play/playlist'){const b=await requestBody(req);return send(res,200,{ok:true,...await startPlaylistPlayback(b,roomId)});}
   const file=pathname==='/'?'index.html':pathname.slice(1);if(req.method!=='GET'||!['index.html','app.js','style.css','favicon.svg'].includes(file))return send(res,404,{error:'页面不存在。'});
   const contents=await readFile(path.join(dir,file));res.writeHead(200,{'Content-Type':{'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.svg':'image/svg+xml'}[path.extname(file)]});res.end(contents);
 }catch(e){console.error(e);send(res,500,{error:e.message||'服务出错。'});}}).listen(port,host,()=>console.log(`Sonos web http://${host}:${port}; Sonos ${ip}`));

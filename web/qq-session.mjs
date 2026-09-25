@@ -5,6 +5,9 @@ import {fileURLToPath} from 'node:url';
 
 const file=path.join(path.dirname(fileURLToPath(import.meta.url)),'.qq-session.json');
 let cookie='';
+let active='';
+const accounts=new Map();
+const selectedPlaylists=new Map();
 let pending=null;
 const pairs=headers=>headers.getSetCookie().map(value=>value.split(';',1)[0]).filter(Boolean);
 const merge=(jar,values)=>{for(const value of values){const i=value.indexOf('=');if(i>0&&value.slice(i+1))jar.set(value.slice(0,i),value.slice(i+1));}};
@@ -19,10 +22,27 @@ function checkCookie(value){
   if(!['qm_keyst','qqmusic_key','qqmusic_key2'].some(key=>jar.get(key)))throw Error('Cookie 中缺少 QQ 音乐登录票据。');
   return joined(jar);
 }
-export async function loadSession(){try{cookie=checkCookie(JSON.parse(await readFile(file,'utf8')).cookie);}catch(e){if(e.code!=='ENOENT')console.warn('QQ 会话未加载：',e.message);}}
+const accountId=value=>{
+  const uin=/(?:^|;)\s*uin=o?(\d+)/.exec(value)?.[1]||'';
+  const wxuin=/(?:^|;)\s*wxuin=(\d+)/.exec(value)?.[1]||'';
+  return uin&&uin!=='0'?uin:wxuin||uin;
+};
+async function persist(){await writeFile(file,JSON.stringify({active,accounts:Object.fromEntries(accounts),selectedPlaylists:Object.fromEntries(selectedPlaylists)}),{encoding:'utf8',mode:0o600});await chmod(file,0o600);}
+export async function loadSession(){try{
+  const saved=JSON.parse(await readFile(file,'utf8'));
+  if(saved.cookie){const valid=checkCookie(saved.cookie);accounts.set(accountId(valid),valid);active=accountId(valid);}
+  for(const [id,value] of Object.entries(saved.accounts||{})){try{const valid=checkCookie(value);if(accountId(valid)===id)accounts.set(id,valid);}catch{}}
+  if(accounts.has(saved.active))active=saved.active;
+  if(!accounts.has(active))active=accounts.keys().next().value||'';
+  cookie=accounts.get(active)||'';
+  for(const [id,playlistId] of Object.entries(saved.selectedPlaylists||{}))if(accounts.has(id)&&/^(liked|\d{1,20})$/.test(String(playlistId)))selectedPlaylists.set(id,String(playlistId));
+}catch(e){if(e.code!=='ENOENT')console.warn('QQ 会话未加载：',e.message);}}
 export const sessionCookie=()=>cookie;
-export const sessionState=()=>({connected:Boolean(cookie),method:cookie?'QQ 音乐会话':'未登录'});
-export async function saveSession(value){const valid=checkCookie(value);await writeFile(file,JSON.stringify({cookie:valid}),{encoding:'utf8',mode:0o600});await chmod(file,0o600);cookie=valid;}
+export const selectedPlaylist=()=>selectedPlaylists.get(active)||'liked';
+export async function saveSelectedPlaylist(id){if(!active)throw Error('请先登录 QQ 音乐。');selectedPlaylists.set(active,id);await persist();}
+export const sessionState=()=>({connected:Boolean(cookie),method:cookie?'QQ 音乐会话':'未登录',active,accounts:[...accounts.keys()].map(id=>({id}))});
+export async function saveSession(value){const valid=checkCookie(value),id=accountId(valid);accounts.set(id,valid);active=id;cookie=valid;await persist();}
+export async function selectSession(id){if(!accounts.has(id))throw Error('QQ 音乐账号不存在。');active=id;cookie=accounts.get(id);await persist();}
 export async function beginQr(){
   const url=new URL('https://ssl.ptlogin2.qq.com/ptqrshow');
   url.search=new URLSearchParams({appid:'716027609',e:'2',l:'M',s:'3',d:'72',v:'4',daid:'383',pt_3rd_aid:'100497308',u1:'https://graph.qq.com/oauth2.0/login_jump'}).toString();
