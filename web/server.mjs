@@ -270,7 +270,10 @@ async function status(roomId){
 async function control(action,value,roomId){
   const {target,device,groupSize}=await coordinator(roomId), transport=(name,args={})=>soap('AVTransport',name,{InstanceID:0,...args},target);
   if(action==='play')await transport('Play',{Speed:1}); else if(action==='pause')await transport('Pause');
-  else if(action==='next')await transport('Next'); else if(action==='previous')await transport('Previous');
+  else if(action==='next'||action==='previous'){
+    await transport(action==='next'?'Next':'Previous');
+    await transport('Play',{Speed:1});
+  }
   else if(action==='volume'||action==='groupVolume'){
     const n=Number(value);if(!Number.isInteger(n)||n<0||n>100)throw Error('音量必须在 0–100 之间。');
     if(action==='groupVolume'){if(groupSize<2)throw Error('当前房间没有分组。');await soap('GroupRenderingControl','SetGroupVolume',{InstanceID:0,DesiredVolume:n},target);}
@@ -354,6 +357,6 @@ http.createServer(async(req,res)=>{try{
   if(req.method==='GET'&&pathname==='/api/playlist'){const p=await playlist(new URL(req.url,`http://${req.headers.host||'localhost'}`).searchParams.has('refresh'));return send(res,200,{id:p.id,title:p.title,songs:p.songs,updatedAt:new Date(p.at).toISOString()});}
   if(req.method==='POST'&&pathname==='/api/control'){const b=await requestBody(req);await control(b.action,b.value,roomId);return send(res,200,{ok:true});}
   if(req.method==='POST'&&pathname==='/api/play'){const b=await requestBody(req);return send(res,200,{ok:true,...await playSong(String(b.mid||''),roomId)});}
-  const file=pathname==='/'?'index.html':pathname.slice(1);if(req.method!=='GET'||!['index.html','app.js','style.css'].includes(file))return send(res,404,{error:'页面不存在。'});
-  const contents=await readFile(path.join(dir,file));res.writeHead(200,{'Content-Type':{'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8'}[path.extname(file)]});res.end(contents);
+  const file=pathname==='/'?'index.html':pathname.slice(1);if(req.method!=='GET'||!['index.html','app.js','style.css','favicon.svg'].includes(file))return send(res,404,{error:'页面不存在。'});
+  const contents=await readFile(path.join(dir,file));res.writeHead(200,{'Content-Type':{'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.svg':'image/svg+xml'}[path.extname(file)]});res.end(contents);
 }catch(e){console.error(e);send(res,500,{error:e.message||'服务出错。'});}}).listen(port,host,()=>console.log(`Sonos web http://${host}:${port}; Sonos ${ip}`));
