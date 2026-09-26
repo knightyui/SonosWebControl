@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="620" viewBox="0 0 1080 620" role="img" aria-labelledby="title desc">
+  <title id="title">手机端资料库与播放页布局示意</title>
+  <desc id="desc">资料库有账号、歌单、最近播放、搜索和底部播放条；播放页有封面、进度、播放控制、队列和更多控制。</desc>
+  <defs>
+    <linearGradient id="background" x2="1" y2="1"><stop stop-color="#171d20"/><stop offset="1" stop-color="#293336"/></linearGradient>
+    <linearGradient id="cover" x2="1" y2="1"><stop stop-color="#547179"/><stop offset="1" stop-color="#a7babc"/></linearGradient>
+    <linearGradient id="player" x2="1" y2="1"><stop stop-color="#334348"/><stop offset="1" stop-color="#1b2427"/></linearGradient>
+  </defs>
+  <rect width="1080" height="620" rx="28" fill="url(#background)"/>
+  <text x="48" y="70" fill="#f7f8f7" font-family="-apple-system,BlinkMacSystemFont,Arial,sans-serif" font-size="30" font-weight="700">手机界面导航</text>
+  <text x="48" y="100" fill="#a8b3b4" font-family="-apple-system,BlinkMacSystemFont,Arial,sans-serif" font-size="16">示意图 · 不包含真实歌单或设备数据</text>
+  <g font-family="-apple-system,BlinkMacSystemFont,Arial,sans-serif">
+    <rect x="70" y="130" width="300" height="430" rx="28" fill="#090c0e" stroke="#586467" stroke-width="2"/>
+    <text x="94" y="174" fill="white" font-size="25" font-weight="700">音乐资料库</text>
+    <rect x="94" y="193" width="114" height="37" rx="16" fill="#242a2d"/><text x="111" y="218" fill="#e7eded" font-size="16">QQ 账号</text>
+    <rect x="219" y="193" width="126" height="37" rx="16" fill="#242a2d"/><text x="237" y="218" fill="#e7eded" font-size="16">刷新歌单</text>
+    <text x="94" y="264" fill="white" font-size="18">歌单</text><text x="172" y="264" fill="#8e999b" font-size="18">最近播放</text>
+    <rect x="94" y="282" width="251" height="56" rx="14" fill="#202629"/><text x="112" y="317" fill="white" font-size="18">当前歌单  ›</text>
+    <rect x="94" y="349" width="251" height="45" rx="14" fill="#202629"/><text x="111" y="378" fill="#aeb9ba" font-size="16">⌕  搜索当前歌单</text>
+    <line x1="94" y1="419" x2="345" y2="419" stroke="#344044"/>
+    <text x="101" y="447" fill="white" font-size="17">歌曲 A</text><text x="101" y="473" fill="#99a5a7" font-size="14">歌手 · 完整版本名称</text>
+    <rect x="84" y="489" width="272" height="48" rx="16" fill="#334348" stroke="#687679"/><text x="102" y="515" fill="white" font-size="16">♪  正在播放       ▶</text><rect x="102" y="525" width="238" height="3" rx="2" fill="#849496"/><rect x="102" y="525" width="81" height="3" rx="2" fill="#fff"/>
+    <text x="112" y="552" fill="#b8c2c3" font-size="13">音乐</text><text x="211" y="552" fill="#b8c2c3" font-size="13">播放</text><text x="304" y="552" fill="#b8c2c3" font-size="13">搜索</text>
+    <path d="M390 345h80m-12-12 12 12-12 12" fill="none" stroke="#b4c6c7" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="386" y="317" fill="#b4c6c7" font-size="15">点底部播放条</text>
+    <rect x="492" y="130" width="300" height="430" rx="28" fill="url(#player)" stroke="#708083" stroke-width="2"/>
+    <rect x="605" y="144" width="74" height="5" rx="3" fill="#8a9c9e"/>
+    <rect x="536" y="168" width="212" height="202" rx="15" fill="url(#cover)"/>
+    <circle cx="642" cy="269" r="47" fill="#233438" opacity=".6"/><circle cx="642" cy="269" r="13" fill="#9db6b8"/>
+    <text x="520" y="404" fill="white" font-size="24" font-weight="700">当前歌曲</text><text x="520" y="431" fill="#c2cecf" font-size="16">歌手 · 专辑</text>
+    <rect x="520" y="453" width="244" height="5" rx="3" fill="#738185"/><rect x="520" y="453" width="92" height="5" rx="3" fill="white"/>
+    <text x="529" y="499" fill="white" font-size="24">⇄</text><text x="585" y="499" fill="white" font-size="24">◀</text><text x="641" y="499" fill="white" font-size="24">Ⅱ</text><text x="698" y="499" fill="white" font-size="24">▶</text><text x="748" y="499" fill="white" font-size="24">↻</text>
+    <text x="526" y="542" fill="#e7eded" font-size="16">☷  队列</text><text x="707" y="542" fill="#e7eded" font-size="16">更多  ···</text>
+    <text x="825" y="225" fill="white" font-size="19" font-weight="600">资料库</text>
+    <text x="825" y="256" fill="#b5c2c3" font-size="15">歌单 · 最近播放</text>
+    <text x="825" y="287" fill="#b5c2c3" font-size="15">全曲库搜索独立入口</text>
+    <line x1="825" y1="313" x2="1020" y2="313" stroke="#516065"/>
+    <text x="825" y="355" fill="white" font-size="19" font-weight="600">播放页</text>
+    <text x="825" y="386" fill="#b5c2c3" font-size="15">封面 · 歌词 · 控制</text>
+    <text x="825" y="417" fill="#b5c2c3" font-size="15">队列与更多控制</text>
+    <text x="825" y="448" fill="#b5c2c3" font-size="15">下滑收起播放页</text>
+  </g>
+</svg>

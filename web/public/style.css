@@ -885,3 +885,12 @@ body:has(#queue-dialog[open]) .player-utilities #queue-open{background:#fff;colo
   dialog.account-dialog[open].sheet-dismissing,dialog.playlist-dialog[open].sheet-dismissing,dialog.sleep-dialog[open].sheet-dismissing,dialog.rooms-dialog[open].sheet-dismissing,dialog.action-dialog[open].sheet-dismissing,dialog#login-dialog[open].sheet-dismissing{animation:none!important;transform:translate3d(0,105%,0);transition:transform .25s cubic-bezier(.3,.75,.45,1)!important}
 }
 @media(prefers-reduced-motion:reduce){dialog.account-dialog[open],dialog.playlist-dialog[open],dialog.sleep-dialog[open],dialog.rooms-dialog[open],dialog.action-dialog[open],dialog#login-dialog[open]{animation:none!important}dialog.account-dialog[open].sheet-settling,dialog.playlist-dialog[open].sheet-settling,dialog.sleep-dialog[open].sheet-settling,dialog.rooms-dialog[open].sheet-settling,dialog.action-dialog[open].sheet-settling,dialog#login-dialog[open].sheet-settling,dialog.account-dialog[open].sheet-dismissing,dialog.playlist-dialog[open].sheet-dismissing,dialog.sleep-dialog[open].sheet-dismissing,dialog.rooms-dialog[open].sheet-dismissing,dialog.action-dialog[open].sheet-dismissing,dialog#login-dialog[open].sheet-dismissing{transition:none!important}}
+
+/* The compact mobile player shows track position; volume remains in the full player. */
+@media(max-width:720px){
+  .mini-player .mini-volume{display:none}
+  .mini-player .mini-progress{display:flex;align-items:center;gap:7px;height:28px;margin-top:3px;color:var(--text-tertiary);font-size:11px}
+  .mini-player .mini-progress input{height:28px;min-width:0}
+  .mini-player .mini-progress span{flex:none;min-width:30px;font-variant-numeric:tabular-nums}
+  .mini-player .mini-progress span:last-child{text-align:right}
+}

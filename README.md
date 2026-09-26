@@ -4,6 +4,12 @@
 
 ![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white)
 
+![手机端页面与操作入口示意图](docs/interface.svg)
+
+> 上图是功能布局示意，不包含真实账号、歌单或设备信息。
+
+**快速开始：**安装 Node.js 20+，确认 Mac 与 Sonos 在同一局域网，在 Sonos App 中添加 QQ 音乐服务，然后按下文的[本地运行](#本地运行)启动服务。首次打开网页后，从“QQ 账号”登录，再选择歌单点播。
+
 ## 功能
 
 - 播放、暂停、上一首、下一首、随机播放、单曲循环、整队循环、淡入淡出、静音和音量控制；循环模式可与随机播放组合
@@ -14,14 +20,16 @@
 - 选择 Sonos 房间、组合或拆分房间，调节单个房间及分组音量
 - 睡眠定时：设置多少分钟后停止，或在指定时间停止；定时保存在 Sonos 中，关闭网页后仍然有效
 - QQ 音乐“我喜欢”、自建与收藏歌单：切换歌单、在歌单内直接搜索、整行点播、向下滚动自动加载更多；“搜索全曲库”使用独立入口，点播后保持搜索面板打开
-- 点击歌单中的歌曲会替换 Sonos 当前队列：先播放所选歌曲，再在后台按歌单顺序补齐其余曲目；正常导入时不显示进度消息，失败时提示原因。全曲库搜索结果继续按单曲点播处理
+- 首次点击歌单歌曲会替换 Sonos 当前队列：先播放所选歌曲，再在后台按歌单顺序补齐其余曲目。再次点播已入队的歌曲直接切换；尚未入队的歌曲优先播放并重新补齐队列。正常导入时不显示进度消息，失败时提示原因。全曲库搜索结果按单曲点播处理
 - 可添加多个 QQ 音乐网页登录状态，并从主页的“QQ 账号”二级菜单切换；网页登录用于显示歌单，音箱播放使用 Sonos 中配置的 QQ 音乐账号
 - 在“当前歌单”卡片中打开可搜索的歌单列表；每个 QQ 账号会记住自己上次选中的歌单，重新打开网页或重启服务后继续显示该歌单
 - “最近播放”记录通过本网页从歌单或全曲库成功发起的点播，每个网页 QQ 账号最多保留 100 首；可再次点播或清空。记录仅保存在本机，不会读取 QQ 音乐 App 或 Sonos App 的历史
 - 专辑封面、逐行歌词和歌词面板；Sonos 队列缺少歌曲信息时，用 QQ 歌单补全标题、歌手、时长与封面
-- 电脑端滚过主播放器后显示顶部控制工具栏；手机端采用资料库主页、底部精简播放条和独立完整播放页
+- 电脑端滚过主播放器后显示顶部控制工具栏；手机端采用资料库主页、底部精简播放条和独立完整播放页。手机精简播放条显示歌曲播放进度，音量在完整播放页中调节
 - QQ 音乐扫码登录；登录过期时可重新登录或导入本机浏览器 Cookie
 - macOS `launchd` 开机后自动运行的配置模板
+
+![网页登录与 Sonos 播放关系图](docs/playback-flow.svg)
 
 ## 最近更新
 
@@ -38,6 +46,8 @@
 - 手机可从底部精简播放条上滑打开完整播放页，从播放页向下滑动收起；播放页跟随手指移动，并为弹窗、列表切换及专辑配色变化加入过渡，系统选择“减少动态效果”时停用动画
 - 歌词页使用封面色背景和逐行渐隐效果；手机上的队列、更多控制、账号、歌单、定时、房间和曲目操作统一为可下滑关闭的底部面板，关闭按钮与安全区间距保持一致
 - 歌单后台导入改为静默执行；只有导入失败时才弹出一次错误提示，减少资料库页面的提示噪声
+- 使用 QQ 音乐返回的完整标题，区分“十面埋伏”与“十面埋伏 (Live)”等不同版本
+- 同一歌单重复点播时复用已入队歌曲；后台导入中选择未入队歌曲，会中止旧任务并优先播放新歌
 
 ## 要求
 
@@ -48,12 +58,15 @@
 
 ## 本地运行
 
-克隆项目后，在终端执行：
+先在 Sonos App 的音箱信息中查看 Sonos 的局域网 IP，或从路由器的设备列表中查看。将下面的占位符替换为该地址，在终端执行：
 
 ```sh
+git clone git@github.com:knightyui/SonosWebControl.git
 cd SonosWebControl/web
 SONOS_IP=你的_Sonos_IP npm start
 ```
+
+如果尚未配置 GitHub SSH，也可以用 `git clone https://github.com/knightyui/SonosWebControl.git`。项目没有第三方 npm 依赖，`npm start` 会直接调用已安装的 Node.js。保持终端打开，按 `Control-C` 可停止前台服务。
 
 默认端口是 `38473`。浏览器打开：
 
@@ -75,7 +88,7 @@ SONOS_IP=你的_Sonos_IP PORT=38473 npm start
 
 网页 QQ 账号只用于读取该账号的歌单、搜索和补全资料。歌曲地址加入 Sonos 队列后，音频由 Sonos 使用其已添加的 QQ 音乐服务账号获取。网页切换到其他 QQ 账号不会把该账号登录到 Sonos；若 Sonos 的账号没有对应歌曲的播放权限，页面会在点播失败或音箱未进入播放状态时提示检查账号、会员权限或版权限制。QQ 音乐全曲库搜索目前显示前 30 条相关歌曲，可直接点播或加入队列。
 
-从歌单点播会清空 Sonos 原队列，所点歌曲立即播放，其余曲目在后台静默加入；导入期间暂时禁止其他队列编辑。导入完成后队列按歌单原顺序排列，播放位置对应所点歌曲。原有随机播放模式会在导入完成后恢复；开启随机播放时，Sonos 队列界面可能显示随机顺序。若导入失败，页面会弹出一次包含已加入曲目数和原因的提示，可再次点播重建队列。大歌单导入需要较长时间，期间不要重启本地服务。
+首次从歌单点播会清空 Sonos 原队列，所点歌曲立即播放，其余曲目在后台静默加入。再次点播同一歌单中已入队的歌曲会直接切换，不重复导入；若新歌曲尚未入队，会取消旧导入任务，让新歌先播放，再从它开始补齐队列。导入期间仍暂时禁止其他队列编辑。导入完成后队列按歌单原顺序排列，播放位置对应所点歌曲。原有随机播放模式会在导入完成后恢复；开启随机播放时，Sonos 队列界面可能显示随机顺序。若导入失败，页面会弹出一次包含已加入曲目数和原因的提示，可再次点播重建队列。大歌单导入需要较长时间，期间不要重启本地服务。
 
 播放新歌时优先沿用 Sonos 当前 QQ 音乐曲目的账号；当前曲目不是 QQ 音乐时，再查队列和收藏中的 QQ 账号参数。因此如果 Sonos 添加了多个 QQ 账号，先在 Sonos App 中播放一首目标会员账号的歌曲，再从网页点播。随机播放开启时，网页会在入队后重新查询歌曲的实际队列位置，避免 Sonos 返回的入队位置与播放位置不一致。
 
@@ -97,7 +110,16 @@ SONOS_IP=你的_Sonos_IP PORT=38473 npm start
 
 ## 配置为开机自动运行
 
-模板位于 [deploy/com.sonos-web.plist.example](deploy/com.sonos-web.plist.example)。复制它到 `~/Library/LaunchAgents/com.sonos-web.plist`，并替换以下占位符：
+模板位于 [deploy/com.sonos-web.plist.example](deploy/com.sonos-web.plist.example)。在项目根目录执行以下命令，将模板复制到用户级服务目录：
+
+```sh
+mkdir -p ~/Library/LaunchAgents
+cp deploy/com.sonos-web.plist.example ~/Library/LaunchAgents/com.sonos-web.plist
+command -v node
+pwd
+```
+
+用文本编辑器打开 `~/Library/LaunchAgents/com.sonos-web.plist`，把下面三个占位符替换为本机的实际值。`command -v node` 给出 Node 路径，`pwd` 给出项目绝对路径；保存后再加载服务。
 
 | 占位符 | 示例值 | 说明 |
 | --- | --- | --- |
@@ -105,20 +127,57 @@ SONOS_IP=你的_Sonos_IP PORT=38473 npm start
 | `{{PROJECT_DIR}}` | `/Users/your-name/SonosWebControl` | 本项目的绝对路径 |
 | `{{SONOS_IP}}` | `192.168.x.x` | Sonos 在局域网中的 IP |
 
-加载并启动服务：
+保存配置后，加载并启动服务：
 
 ```sh
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.sonos-web.plist
 launchctl kickstart -k gui/$(id -u)/com.sonos-web
 ```
 
-查看状态：
+查看状态；输出应包含 `state = running`：
 
 ```sh
 launchctl print gui/$(id -u)/com.sonos-web
 ```
 
-停用服务：
+### 重启服务
+
+**通过终端前台运行时：**在原终端按 `Control-C`，再进入 `web` 目录，使用原来的 `SONOS_IP` 和 `PORT` 重新执行 `npm start`。不要同时运行前台进程和 `launchd` 服务，否则端口会被占用。
+
+**通过 `launchd` 自动运行时：**
+
+1. 先确认大歌单的后台导入已经结束；重启会中断尚未完成的导入。可以在网页中等待队列曲目数稳定，或查看 `http://localhost:38473/api/queue/import`，确认 `import` 为 `null` 或 `phase` 为 `complete`。
+2. 在终端设置实际使用的配置路径。以下是本仓库模板对应的默认路径；如果你安装时改过文件名，请填写自己的实际路径。
+
+   ```sh
+   plist_path="$HOME/Library/LaunchAgents/com.sonos-web.plist"
+   ls -l "$plist_path"
+   service_label=$(/usr/libexec/PlistBuddy -c 'Print :Label' "$plist_path")
+   echo "$service_label"
+   ```
+
+3. 用配置中的真实 `Label` 重启服务，再检查状态和网页是否响应：
+
+   ```sh
+   launchctl kickstart -k "gui/$(id -u)/$service_label"
+   launchctl print "gui/$(id -u)/$service_label" | head -20
+   curl -fsS -o /dev/null -w '%{http_code}\n' http://localhost:38473/
+   ```
+
+   `curl` 输出 `200` 表示网页服务已启动。如果自定义了 `PORT`，把上面的 `38473` 换成实际端口；手机浏览器随后刷新页面。
+
+4. 如果启动失败，检查服务日志。模板默认写入项目 `web` 目录中的以下文件（已被 Git 忽略）：
+
+   ```sh
+   tail -n 50 web/.server.stderr.log
+   tail -n 50 web/.server.stdout.log
+   ```
+
+修改了 `plist` 的启动路径、环境变量或端口后，单独执行 `kickstart` 不会重新读取配置。先运行 `launchctl bootout gui/$(id -u) "$plist_path"`，再运行 `launchctl bootstrap gui/$(id -u) "$plist_path"`，然后按上述步骤检查状态。
+
+### 停用服务
+
+不再需要自动运行时，停用服务：
 
 ```sh
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.sonos-web.plist
@@ -137,6 +196,9 @@ web/
   package.json        Node.js 启动脚本
 deploy/
   com.sonos-web.plist.example  launchd 配置模板
+docs/
+  interface.svg       手机界面入口示意
+  playback-flow.svg   网页账号与 Sonos 播放关系
 ```
 
 网页书签与页眉使用简洁的黑底白字“S”图标，保存在 `web/public/favicon.svg`，由本地服务提供。
@@ -146,11 +208,11 @@ deploy/
 项目根目录的 `.gitignore` 已排除登录会话、本机播放记录、日志、环境变量文件、实际 `plist` 配置、依赖目录和 Finder 元数据。上传前可执行：
 
 ```sh
-git add .
-git status
+git status --short
+git ls-files web/.qq-session.json web/.play-history.json '*.log' '*.plist' '.env*'
 ```
 
-确认暂存列表中没有 `web/.qq-session.json`、`web/.play-history.json`、日志文件、`.env` 或包含个人路径和设备地址的实际配置文件，再提交并推送到你的 GitHub 仓库。
+第二条命令应没有输出。确认暂存列表中也没有登录会话、日志、环境变量或包含个人路径和设备地址的实际配置文件，再提交或推送。
 
 ## 注意事项
 

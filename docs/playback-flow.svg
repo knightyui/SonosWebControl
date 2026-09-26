@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="310" viewBox="0 0 1080 310" role="img" aria-labelledby="title desc">
+  <title id="title">QQ 音乐网页登录与 Sonos 音箱播放关系</title>
+  <desc id="desc">QQ 音乐网页登录供网页读取歌单和搜索结果，网页通过局域网控制 Sonos，Sonos 使用其自身绑定的 QQ 音乐服务账号获取音频。</desc>
+  <rect width="1080" height="310" rx="28" fill="#171d20"/>
+  <g font-family="-apple-system,BlinkMacSystemFont,Arial,sans-serif">
+    <text x="42" y="59" fill="white" font-size="28" font-weight="700">登录与播放如何配合</text>
+    <rect x="42" y="100" width="265" height="130" rx="20" fill="#273136" stroke="#52636a"/>
+    <text x="66" y="143" fill="white" font-size="21" font-weight="600">QQ 音乐网页登录</text>
+    <text x="66" y="177" fill="#afbec1" font-size="16">读取歌单 · 搜索 · 封面</text>
+    <text x="66" y="205" fill="#afbec1" font-size="16">可切换多个网页账号</text>
+    <path d="M323 164h85m-14-12 14 12-14 12" fill="none" stroke="#a9c2c4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="422" y="100" width="251" height="130" rx="20" fill="#34444a" stroke="#72888b"/>
+    <text x="447" y="143" fill="white" font-size="21" font-weight="600">Mac 上的网页服务</text>
+    <text x="447" y="177" fill="#c1d2d4" font-size="16">选歌 · 控制 · 队列</text>
+    <text x="447" y="205" fill="#c1d2d4" font-size="16">通过局域网连接音箱</text>
+    <path d="M690 164h85m-14-12 14 12-14 12" fill="none" stroke="#a9c2c4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="789" y="100" width="249" height="130" rx="20" fill="#273136" stroke="#52636a"/>
+    <text x="814" y="143" fill="white" font-size="21" font-weight="600">Sonos 音箱</text>
+    <text x="814" y="177" fill="#afbec1" font-size="16">使用音箱里的 QQ 服务账号</text>
+    <text x="814" y="205" fill="#afbec1" font-size="16">获取并播放音频</text>
+    <text x="42" y="274" fill="#aab9bb" font-size="15">网页账号决定可浏览的资料；歌曲能否播放取决于 Sonos 绑定账号的权限。</text>
+  </g>
+</svg>
