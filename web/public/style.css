@@ -850,12 +850,16 @@ body:has(#queue-dialog[open]) .player-utilities #queue-open{background:#fff;colo
 .lyrics-dialog .lyrics-list{position:relative;z-index:1;flex:1;min-height:0;max-height:none;margin:8px -6px 0;padding:28% 18px 35%;overflow:auto;text-align:center;scroll-behavior:smooth;overscroll-behavior:contain;mask-image:linear-gradient(to bottom,transparent,#000 14%,#000 83%,transparent);-webkit-mask-image:linear-gradient(to bottom,transparent,#000 14%,#000 83%,transparent)}
 .lyrics-dialog .lyric-line{padding:14px 4px;color:#ffffff75;font-size:19px;line-height:1.5;letter-spacing:.01em;transition:color .25s,opacity .25s,transform .25s}
 .lyrics-dialog .lyric-line.active{color:#fff;font-size:25px;font-weight:700;transform:none;text-shadow:0 2px 20px #0008}
+.lyrics-dialog .lyric-original,.lyrics-dialog .lyric-translation{display:block}
+.lyrics-dialog .lyric-translation{margin-top:7px;color:#ffffff9c;font-size:.72em;font-weight:400;line-height:1.45;text-shadow:none}
+.lyrics-dialog .lyric-line.active .lyric-translation{color:#ffffffe0}
 @media(max-width:720px){
   .lyrics-dialog[open]{position:fixed;inset:auto 0 0;width:100vw;max-width:100vw;height:calc(100dvh - 24px);max-height:calc(100dvh - 24px);margin:0;padding:35px 23px calc(10px + env(safe-area-inset-bottom));border:0;border-radius:30px 30px 0 0;animation:sonos-bottom-sheet-enter .34s cubic-bezier(.2,.75,.2,1) both;will-change:transform}
   .lyrics-dialog::before{content:'';position:absolute;z-index:2;top:10px;left:50%;width:36px;height:4px;border-radius:99px;background:#ffffff70;transform:translateX(-50%)}
   .lyrics-dialog .lyrics-list{margin:18px -8px 0;padding:42% 14px 50%}
   .lyrics-dialog .lyric-line{padding:15px 2px;font-size:20px}
   .lyrics-dialog .lyric-line.active{font-size:27px}
+  .player .player-lyric.has-translation #lyric-next{display:block}
   .lyrics-dialog[open].sheet-dragging{animation:none!important;transform:translate3d(0,var(--sheet-offset,0px),0);transition:none!important}
   .lyrics-dialog[open].sheet-settling{animation:none!important;transform:translate3d(0,0,0);transition:transform .28s cubic-bezier(.2,.8,.2,1)!important}
   .lyrics-dialog[open].sheet-dismissing{animation:none!important;transform:translate3d(0,105%,0);transition:transform .25s cubic-bezier(.3,.75,.45,1)!important}

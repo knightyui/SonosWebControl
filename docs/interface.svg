@@ -20,7 +20,7 @@
     <line x1="94" y1="419" x2="345" y2="419" stroke="#344044"/>
     <text x="101" y="447" fill="white" font-size="17">歌曲 A</text><text x="101" y="473" fill="#99a5a7" font-size="14">歌手 · 完整版本名称</text>
     <rect x="84" y="489" width="272" height="48" rx="16" fill="#334348" stroke="#687679"/><text x="102" y="515" fill="white" font-size="16">♪  正在播放       ▶</text><rect x="102" y="525" width="238" height="3" rx="2" fill="#849496"/><rect x="102" y="525" width="81" height="3" rx="2" fill="#fff"/>
-    <text x="112" y="552" fill="#b8c2c3" font-size="13">音乐</text><text x="211" y="552" fill="#b8c2c3" font-size="13">播放</text><text x="304" y="552" fill="#b8c2c3" font-size="13">搜索</text>
+    <text x="149" y="552" fill="#b8c2c3" font-size="13">音乐</text><text x="271" y="552" fill="#b8c2c3" font-size="13">搜索</text>
     <path d="M390 345h80m-12-12 12 12-12 12" fill="none" stroke="#b4c6c7" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
     <text x="386" y="317" fill="#b4c6c7" font-size="15">点底部播放条</text>
     <rect x="492" y="130" width="300" height="430" rx="28" fill="url(#player)" stroke="#708083" stroke-width="2"/>

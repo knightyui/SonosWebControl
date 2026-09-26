@@ -134,6 +134,22 @@ function parseLyrics(source){
   }
   return lines.sort((a,b)=>a.time-b.time).slice(0,500);
 }
+function decodeLyrics(value){
+  let raw=String(value||'');
+  if(raw&&!raw.includes('[')&&/^[A-Za-z0-9+/=\s]+$/.test(raw))raw=Buffer.from(raw,'base64').toString('utf8');
+  return raw;
+}
+function addTranslations(lines,translations){
+  let next=0;
+  return lines.map(line=>{
+    while(next<translations.length&&translations[next].time<line.time-.6)next++;
+    if(next<translations.length&&Math.abs(translations[next].time-line.time)<=.6){
+      const translation=translations[next++].text;
+      if(translation&&translation!==line.text)return {...line,translation};
+    }
+    return line;
+  });
+}
 async function lyricsForSong(id){
   const cachedLyrics=lyricsCache.get(id);
   if(cachedLyrics&&Date.now()-cachedLyrics.at<1800000)return cachedLyrics.data;
@@ -148,15 +164,34 @@ async function lyricsForSong(id){
     mid=(await response.json()).data?.[0]?.mid;
   }
   if(!mid)throw Error('当前歌曲没有可用的歌词信息。');
-  const url=new URL('https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg');
-  url.search=new URLSearchParams({songmid:mid,format:'json',nobase64:'1',g_tk:'5381',loginUin:'0',hostUin:'0',inCharset:'utf8',outCharset:'utf-8',platform:'yqq',needNewCode:'0'}).toString();
-  const response=await fetch(url,{headers,signal:AbortSignal.timeout(10000)});
-  if(!response.ok)throw Error(`歌词请求失败：${response.status}`);
-  const result=await response.json();
-  if(result.code!==0)throw Error('当前歌曲的歌词暂不可用。');
-  let raw=String(result.lyric||'');
-  if(!raw.includes('[')&&/^[A-Za-z0-9+/=\s]+$/.test(raw))raw=Buffer.from(raw,'base64').toString('utf8');
-  const data={songId:Number(id),lines:parseLyrics(raw)};
+  // The legacy endpoint often omits translations unless they are explicitly
+  // requested. The current PlayLyricInfo endpoint supports trans: 1.
+  let lines=[],translations=[];
+  try{
+    const response=await fetch('https://u.y.qq.com/cgi-bin/musicu.fcg',{
+      method:'POST',headers:{'Content-Type':'application/json',Referer:'https://y.qq.com/'},
+      body:JSON.stringify({comm:{ct:24,cv:0},lyric:{module:'music.musichallSong.PlayLyricInfo',method:'GetPlayLyricInfo',param:{songMID:mid,songID:Number(id),trans:1}}}),
+      signal:AbortSignal.timeout(10000)
+    });
+    if(response.ok){
+      const block=(await response.json()).lyric;
+      if(block?.code===0){
+        lines=parseLyrics(decodeLyrics(block.data?.lyric));
+        translations=parseLyrics(decodeLyrics(block.data?.trans));
+      }
+    }
+  }catch{}
+  if(!lines.length){
+    const url=new URL('https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg');
+    url.search=new URLSearchParams({songmid:mid,format:'json',nobase64:'1',trans:'1',g_tk:'5381',loginUin:'0',hostUin:'0',inCharset:'utf8',outCharset:'utf-8',platform:'yqq',needNewCode:'0'}).toString();
+    const response=await fetch(url,{headers,signal:AbortSignal.timeout(10000)});
+    if(!response.ok)throw Error(`歌词请求失败：${response.status}`);
+    const result=await response.json();
+    if(result.code!==0)throw Error('当前歌曲的歌词暂不可用。');
+    lines=parseLyrics(decodeLyrics(result.lyric));
+    translations=parseLyrics(decodeLyrics(result.trans));
+  }
+  const data={songId:Number(id),lines:addTranslations(lines,translations)};
   lyricsCache.set(id,{at:Date.now(),data});
   if(lyricsCache.size>200)lyricsCache.delete(lyricsCache.keys().next().value);
   return data;
