@@ -1,10 +1,15 @@
+import {assessTransport,createOperationTracker} from './transport-sync.mjs';
 const $=id=>document.getElementById(id);
 let songs=[],visible=60,filtered=[],playlistOptions=[],currentStatus=null,toastTimer,qrTimer,localLogin=false;
 let selectedRoomId=localStorage.getItem('sonos-room-id')||'',roomData=null,chosenSong=null,chosenQueueTrack=null,queueTotal=0;
 let seeking=false,volumeDragging=false,volumeDesired=null,volumeSending=false,artUrl='';
 let lyrics=[],lyricTrack='',lyricMessage='正在读取歌词…',activeLyricIndex=-2;
 let positionAnchor={seconds:0,at:Date.now(),playing:false};
-let statusRequest=0,transportSettlingUntil=0,expectedPlaying=null,expectedPosition=null;
+let statusRequest=0,transportSettlingUntil=0,expectedPlaying=null;
+let transportExpectation=null;
+const transportOperations=createOperationTracker();
+let playRequestGeneration=0;
+let pendingShuffleValue=null,shuffleGeneration=0;
 const themeProperties=['--page-bg','--page-glow','--surface','--surface-deep','--surface-raised','--border','--accent'];
 function resetSongTheme(){for(const name of themeProperties)document.documentElement.style.removeProperty(name);}
 function rgbToHsl(r,g,b){
@@ -161,48 +166,60 @@ function renderOptimisticTransport(playing,position=livePosition()){
   if(!currentStatus)return;
   renderStatus({...currentStatus,playing,position:duration(Math.floor(position))});
 }
-function beginTransportSync(playing,position){
+function beginTransportSync(playing,position,requireTrackChange=false){
+  const operation=transportOperations.begin();
+  statusRequest++;
+  transportExpectation={playing,position:Number.isFinite(position)?position:null,startedAt:Date.now(),requireTrackChange,
+    previousTrack:currentStatus?.track,previousSongId:currentStatus?.songId,previousPosition:timecode(currentStatus?.position)};
   expectedPlaying=playing;
-  expectedPosition=Number.isFinite(position)?position:null;
   transportSettlingUntil=Date.now()+6500;
   renderOptimisticTransport(playing,position);
+  return operation;
 }
 async function updateStatus(){
   const request=++statusRequest;
   try{
     const status=await api('/api/status');
     if(request!==statusRequest)return null;
+    const displayStatus=pendingShuffleValue===null?status:{...status,shuffle:pendingShuffleValue};
     const awaitingExpectedState=expectedPlaying!==null&&transportSettlingUntil>Date.now();
-    const positionPending=expectedPosition!==null&&Math.abs(timecode(status.position)-expectedPosition)>2;
-    if(awaitingExpectedState&&(status.playing!==expectedPlaying||positionPending)){
+    const assessment=awaitingExpectedState&&transportExpectation?assessTransport(status,transportExpectation):null;
+    if(assessment&&!assessment.confirmed){
       // Sonos briefly reports the previous transport state while applying a command.
-      renderStatus({...status,playing:expectedPlaying,position:positionPending?duration(expectedPosition):status.position});
+      renderStatus({...displayStatus,playing:expectedPlaying,position:assessment.displayPosition===null?status.position:duration(assessment.displayPosition)});
       return null;
     }
-    renderStatus(status);
+    renderStatus(displayStatus);
     return status;
   }catch(e){
+    if(request!==statusRequest)return null;
     $('connection').textContent='● 音响未连接';$('connection').className='connection error';
     if(!currentStatus)toast(e.message);
     return null;
   }
 }
-async function settleTransport(playing,songId=0){
+async function settleTransport(playing,songId=0,operation){
   const deadline=Date.now()+6500;
   let matchingReports=0;
   while(Date.now()<deadline){
+    if(operation&&!transportOperations.isCurrent(operation))return false;
     const status=await updateStatus();
+    if(operation&&!transportOperations.isCurrent(operation))return false;
     if(status?.playing===playing&&(!songId||status.songId===songId)){
       matchingReports++;
-      if(matchingReports>=2){expectedPlaying=null;expectedPosition=null;transportSettlingUntil=0;return true;}
+      if(matchingReports>=2){expectedPlaying=null;transportExpectation=null;transportSettlingUntil=0;return true;}
     }else matchingReports=0;
     await delay(350);
   }
-  expectedPlaying=null;expectedPosition=null;transportSettlingUntil=0;
+  if(operation&&!transportOperations.isCurrent(operation))return false;
+  const expectation=transportExpectation;
+  expectedPlaying=null;transportExpectation=null;transportSettlingUntil=0;
   const status=await updateStatus();
-  return status?.playing===playing&&(!songId||status.songId===songId);
+  return Boolean(status&&status.playing===playing&&(!songId||status.songId===songId)&&
+    (!expectation||assessTransport(status,expectation).confirmed));
 }
 async function playSong(song,row){
+  const playRequest=++playRequestGeneration;
   const inSearch=Boolean(row.closest('#quick-search-results'));
   const inHistory=Boolean(row.closest('#history-list'));
   const fromSearch=inSearch||inHistory;
@@ -212,13 +229,17 @@ async function playSong(song,row){
     const payload=fromSearch?{mid:song.mid}:{mid:song.mid,index:song.index,playlistId:$('qq-playlist').value};
     if(!fromSearch)lastQueueImportError='';
     const result=await api(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    if(playRequest!==playRequestGeneration)return;
     if(result.import)renderQueueImport(result.import);
-    beginTransportSync(true);toast(`正在播放：${song.title}`);
-    if(!await settleTransport(true,song.id))throw Error('Sonos 未能播放这首歌。请检查音箱上的 QQ 音乐账号、会员权限或版权限制。');
+    const operation=beginTransportSync(true);toast(`正在播放：${song.title}`);
+    if(!await settleTransport(true,song.id,operation)){
+      if(!transportOperations.isCurrent(operation))return;
+      throw Error('Sonos 未能播放这首歌。请检查音箱上的 QQ 音乐账号、会员权限或版权限制。');
+    }
     try{await api('/api/history/record',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mid:song.mid})});}catch{/* 播放成功不依赖本地历史写入。 */}
     if(inSearch)$('quick-search-state').textContent=`正在播放：${song.title}`;
     if(!$('history-panel').hidden)await loadHistory();
-  }catch(e){toast(e.message);if(inSearch)$('quick-search-state').textContent=e.message;}
+  }catch(e){if(playRequest===playRequestGeneration){toast(e.message);if(inSearch)$('quick-search-state').textContent=e.message;}}
   finally{row.disabled=false;row.classList.remove('loading');}
 }
 let queueImportPolling=false,queueImportTimer=null,lastQueueImportError='';
@@ -477,16 +498,30 @@ $('lyrics-open').onclick=$('mini-lyric-open').onclick=e=>{showDialog('lyrics-dia
 $('lyrics-close').onclick=()=>$('lyrics-dialog').close();$('lyrics-dialog').addEventListener('close',updateMiniVisibility);
 $('cookie-save').onclick=async()=>{const button=$('cookie-save');button.disabled=true;try{await api('/api/qq/login/cookie',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cookie:$('cookie-input').value})});$('cookie-input').value='';$('login-dialog').close();stopQr();await checkSession();await loadCatalog(true);await loadPlaylist(true);toast('QQ 音乐登录状态已保存');}catch(e){toast(e.message);}finally{button.disabled=false;}};
 async function control(action,value){
+  if(['play','pause','next','previous','seek'].includes(action))playRequestGeneration++;
+  const shuffleOperation=action==='shuffle'?++shuffleGeneration:null;
+  if(shuffleOperation){
+    pendingShuffleValue=Boolean(value);
+    if(currentStatus)currentStatus={...currentStatus,shuffle:pendingShuffleValue};
+    for(const id of ['shuffle','mini-shuffle','queue-shuffle']){
+      $(id).classList.toggle('active',pendingShuffleValue);
+      $(id).setAttribute('aria-pressed',String(pendingShuffleValue));
+      $(id).title=pendingShuffleValue?'关闭随机播放':'随机播放';
+    }
+  }
   const toggle=action==='repeatAll'?$('repeat-all'):action==='crossfade'?$('crossfade'):null;
   if(toggle)toggle.disabled=true;
   const expected=action==='play'||action==='next'||action==='previous'?true:action==='pause'?false:action==='seek'?Boolean(currentStatus?.playing):null;
-  if(action==='seek')beginTransportSync(expected,Number(value));
-  else if(expected!==null)beginTransportSync(expected);
+  let operation=null;
+  if(action==='seek')operation=beginTransportSync(expected,Number(value));
+  else if(expected!==null)operation=beginTransportSync(expected,undefined,action==='next'||action==='previous');
   try{
     await api('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,value})});
-    if(expected!==null)await settleTransport(expected);else await updateStatus();
+    if(shuffleOperation===shuffleGeneration)pendingShuffleValue=null;
+    if(operation&&!transportOperations.isCurrent(operation))return;
+    if(expected!==null)await settleTransport(expected,0,operation);else await updateStatus();
   }
-  catch(e){expectedPlaying=null;expectedPosition=null;transportSettlingUntil=0;await updateStatus();toast(e.message);}finally{if(toggle)toggle.disabled=false;}
+  catch(e){if(shuffleOperation===shuffleGeneration)pendingShuffleValue=null;if(!operation||transportOperations.isCurrent(operation)){expectedPlaying=null;transportExpectation=null;transportSettlingUntil=0;await updateStatus();toast(e.message);}}finally{if(toggle)toggle.disabled=false;}
 }
 async function sendVolume(){if(volumeSending)return;volumeSending=true;try{while(volumeDesired!==null){const value=volumeDesired;volumeDesired=null;await api('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'volume',value})});}}catch(e){volumeDesired=null;toast(e.message);}finally{volumeSending=false;await updateStatus();}}
 function queueVolume(value){volumeDesired=value;sendVolume();}
@@ -671,7 +706,7 @@ async function loadQueue(start=0,focusCurrent=false){
       info.append(title,artist);row.append(number,art,info);
       const more=document.createElement('button');more.type='button';more.className='queue-more-trigger';more.setAttribute('aria-label',`${track.title}的队列操作`);more.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>';
       more.onclick=e=>{chosenQueueTrack=track;$('queue-action-name').textContent=`${track.number}. ${track.title} · ${track.artist}`;$('queue-move-up').disabled=track.number<=1;$('queue-move-down').disabled=track.number>=queueTotal;showDialog('queue-action-dialog',e);updateMiniVisibility();};
-      row.onclick=async()=>{row.blur();row.disabled=true;try{await api('/api/queue/play',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({number:track.number,key:track.key})});beginTransportSync(true);await settleTransport(true);markCurrentQueueTrack();toast(`正在播放：${track.title}`);}catch(e){expectedPlaying=null;expectedPosition=null;transportSettlingUntil=0;await updateStatus();toast(e.message);}finally{row.disabled=false;}};
+      row.onclick=async()=>{const playRequest=++playRequestGeneration;row.blur();row.disabled=true;let operation=null;try{await api('/api/queue/play',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({number:track.number,key:track.key})});if(playRequest!==playRequestGeneration)return;operation=beginTransportSync(true);await settleTransport(true,0,operation);if(!transportOperations.isCurrent(operation))return;markCurrentQueueTrack();toast(`正在播放：${track.title}`);}catch(e){if(playRequest===playRequestGeneration&&(!operation||transportOperations.isCurrent(operation))){expectedPlaying=null;transportExpectation=null;transportSettlingUntil=0;await updateStatus();toast(e.message);}}finally{row.disabled=false;}};
       entry.append(row,more);fragment.append(entry);
     }
     $('queue-list').replaceChildren(fragment);queueStart=start;queueTotal=data.total;
@@ -791,5 +826,5 @@ $('sleep-form').onsubmit=e=>{
   setSleep({mode:'until',at:target.toISOString()});
 };
 $('sleep-cancel').onclick=()=>setSleep({mode:'cancel'});
-checkSession().then(async()=>{try{await loadCatalog();}catch(e){toast(e.message);}await loadPlaylist();});loadRooms().then(()=>{updateStatus();loadSleep();pollQueueImport();});setInterval(updateStatus,5000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)pollQueueImport();});setInterval(()=>{if(!document.hidden)loadSleep();},60000);
+checkSession().then(async()=>{try{await loadCatalog();}catch(e){toast(e.message);}await loadPlaylist();});loadRooms().then(()=>{updateStatus();loadSleep();pollQueueImport();});setInterval(()=>{if(!document.hidden)updateStatus();},5000);document.addEventListener('visibilitychange',()=>{if(!document.hidden){updateStatus();pollQueueImport();}});setInterval(()=>{if(!document.hidden)loadSleep();},60000);
 setInterval(()=>{updateProgress();renderSleep();},1000);

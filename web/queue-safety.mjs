@@ -1,3 +1,32 @@
+import {randomInt} from 'node:crypto';
+
+export function shuffledIndices(indices,choose=randomInt,avoid=indices){
+  const result=[...indices];
+  for(let end=result.length-1;end>0;end--){
+    const pick=choose(end+1);
+    if(!Number.isInteger(pick)||pick<0||pick>end)throw Error('随机数无效。');
+    [result[end],result[pick]]=[result[pick],result[end]];
+  }
+  if(result.length>1&&result.every((item,index)=>item===avoid[index])){
+    [result[0],result[1]]=[result[1],result[0]];
+  }
+  return result;
+}
+
+export function remainingPlaylistIndices(length,currentIndex,playedIndices=[]){
+  const played=new Set(playedIndices);
+  const result=[];
+  for(let offset=1;offset<length;offset++){
+    const index=(currentIndex+offset)%length;
+    if(!played.has(index))result.push(index);
+  }
+  return result;
+}
+
+export function withoutSonosShuffle(mode){
+  return ({SHUFFLE_NOREPEAT:'NORMAL',SHUFFLE:'REPEAT_ALL',SHUFFLE_REPEAT_ONE:'REPEAT_ONE'})[mode]||mode;
+}
+
 export function matchPlaylistQueue(playlistIds,queueIds){
   if(!playlistIds.length||playlistIds.length!==queueIds.length)return null;
   const positions=new Map();
@@ -37,5 +66,20 @@ export async function replaceQueueSafely({oldCount,append,play,removeOld,removeS
     throw error;
   }
   if(oldCount)await removeOld(oldCount);
+  return stagedNumber;
+}
+
+export async function replaceQueueTailSafely({appendFirst,validateFirst,removeOldTail,rollbackFirst}){
+  let stagedNumber;
+  try{
+    stagedNumber=await appendFirst();
+    await validateFirst(stagedNumber);
+    await removeOldTail();
+  }catch(error){
+    try{await rollbackFirst(stagedNumber);}catch(cleanupError){
+      throw Error(`${error.message}；新曲目清理失败：${cleanupError.message}`,{cause:error});
+    }
+    throw error;
+  }
   return stagedNumber;
 }

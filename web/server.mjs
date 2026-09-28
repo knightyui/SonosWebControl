@@ -5,7 +5,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {beginQr,loadSession,pollQr,saveSelectedPlaylist,saveSession,selectSession,selectedPlaylist,sessionCookie,sessionState} from './qq-session.mjs';
 import {clearPlayHistory,loadPlayHistory,recentPlays,recordPlay} from './play-history.mjs';
-import {assertQueueTrack,matchPlaylistQueue,replaceQueueSafely,requiresQueueRecheck} from './queue-safety.mjs';
+import {assertQueueTrack,matchPlaylistQueue,remainingPlaylistIndices,replaceQueueSafely,replaceQueueTailSafely,requiresQueueRecheck,shuffledIndices,withoutSonosShuffle} from './queue-safety.mjs';
 
 const ip=process.env.SONOS_IP;
 if(!ip)throw Error('请设置 SONOS_IP，例如 SONOS_IP=192.168.x.x npm start。');
@@ -283,6 +283,7 @@ async function playSong(mid,roomId){
 }
 const queueImports=new Map();
 const queueMutations=new Map();
+const shuffleModes=new Map();
 function withQueueMutation(target,action){
   const previous=queueMutations.get(target)||Promise.resolve();
   const current=previous.catch(()=>{}).then(action);
@@ -304,6 +305,36 @@ async function enqueueDuringImport(target,song,context,position,expectedTotal){
       if(total!==expectedTotal||attempt===2)throw error;
     }
   }
+}
+function finishQueueImport(target,job,list,context,plan){
+  void (async()=>{
+    try{
+      for(const {index,position} of plan){
+        await withQueueMutation(target,async()=>{
+          if(job.cancelled)return;
+          await enqueueDuringImport(target,list.songs[index],context,position,job.added);
+          if(position)job.order.unshift(index);else job.order.push(index);
+          job.added++;
+        });
+        if(job.cancelled)return;
+      }
+      await withQueueMutation(target,async()=>{
+        if(job.cancelled)return;
+        const queueState=await browse('Q:0',0,1,target);
+        if(queueState.total!==job.total)throw Error(`队列曲目数不一致：Sonos 返回 ${queueState.total} 首。`);
+        job.phase='complete';job.finishedAt=Date.now();job.queueUpdateId=queueState.updateId;
+      });
+    }catch(error){
+      if(!job.cancelled){job.phase='error';job.error=`已导入 ${job.added}/${job.total} 首；${error.message}`;console.error('歌单队列导入失败',error);}
+    }finally{
+      if(!job.cancelled&&job.originalMode&&job.originalMode!=='NORMAL')try{
+        await withQueueMutation(target,async()=>{
+          if(!job.cancelled)await soap('AVTransport','SetPlayMode',{InstanceID:0,NewPlayMode:job.originalMode},target);
+        });
+      }catch(error){job.phase='error';job.error=`${job.error||'队列已导入'}；恢复播放模式失败：${error.message}`;}
+      if(!job.cancelled)job.modeRestored=true;
+    }
+  })();
 }
 async function startPlaylistPlayback(input,roomId){
   const list=await playlist();
@@ -349,10 +380,15 @@ async function startPlaylistPlayback(input,roomId){
     if(previous&&['preparing','building','complete'].includes(previous.phase)){previous.cancelled=true;previous.phase='cancelled';}
     const job={phase:'preparing',playlistId:list.id,account:historyAccount(),title:list.title,selectedTitle:song.title,added:0,total:list.songs.length,order:[],error:''};
     queueImports.set(target,job);
+    let modeBeforeImport='';
+    const shuffleBeforeImport=shuffleModes.get(target);
     try{
       const context=await qqQueueContext(target);
       const mode=tag(await soap('AVTransport','GetTransportSettings',{InstanceID:0},target),'PlayMode');
-      job.originalMode=inheritMode&&previous.originalMode?previous.originalMode:mode;
+      modeBeforeImport=mode;
+      const customShuffle=shuffleModes.get(target)??mode.startsWith('SHUFFLE');
+      shuffleModes.set(target,customShuffle);
+      job.originalMode=customShuffle?withoutSonosShuffle(inheritMode&&previous.originalMode?previous.originalMode:mode):inheritMode&&previous.originalMode?previous.originalMode:mode;
       if(mode&&mode!=='NORMAL')await soap('AVTransport','SetPlayMode',{InstanceID:0,NewPlayMode:'NORMAL'},target);
       const oldCount=(await browse('Q:0',0,1,target)).total;
       await replaceQueueSafely({
@@ -382,43 +418,84 @@ async function startPlaylistPlayback(input,roomId){
         }
       });
       job.phase='building';job.added=1;job.order=[index];
-      void (async()=>{
-        try{
-          for(const [start,end,step,position] of [[index+1,list.songs.length,1,0],[index-1,-1,-1,1]]){
-            for(let i=start;i!==end;i+=step){
-              await withQueueMutation(target,async()=>{
-                if(job.cancelled)return;
-                await enqueueDuringImport(target,list.songs[i],context,position,job.added);
-                if(position)job.order.unshift(i);else job.order.push(i);
-                job.added++;
-              });
-              if(job.cancelled)return;
-            }
-          }
-          await withQueueMutation(target,async()=>{
-            if(job.cancelled)return;
-            const queueState=await browse('Q:0',0,1,target);
-            if(queueState.total!==job.total)throw Error(`队列曲目数不一致：Sonos 返回 ${queueState.total} 首。`);
-            job.phase='complete';job.finishedAt=Date.now();job.queueUpdateId=queueState.updateId;
-          });
-        }catch(error){
-          if(!job.cancelled){job.phase='error';job.error=`已导入 ${job.added}/${job.total} 首；${error.message}`;console.error('歌单队列导入失败',error);}
-        }finally{
-          if(!job.cancelled&&job.originalMode&&job.originalMode!=='NORMAL')try{
-            await withQueueMutation(target,async()=>{
-              if(!job.cancelled)await soap('AVTransport','SetPlayMode',{InstanceID:0,NewPlayMode:job.originalMode},target);
-            });
-          }catch(error){job.phase='error';job.error=`${job.error||'队列已导入'}；恢复播放模式失败：${error.message}`;}
-          if(!job.cancelled)job.modeRestored=true;
-        }
-      })();
+      const plan=customShuffle
+        ?shuffledIndices(remainingPlaylistIndices(list.songs.length,index,[index])).map(i=>({index:i,position:0}))
+        :[...Array.from({length:list.songs.length-index-1},(_,offset)=>({index:index+offset+1,position:0})),
+          ...Array.from({length:index},(_,offset)=>({index:index-offset-1,position:1}))];
+      finishQueueImport(target,job,list,context,plan);
       return {title:song.title,artist:song.artist,queueNumber:1,import:visibleQueueImport(job)};
     }catch(error){
       job.phase='error';job.error=error.message;
-      if(job.originalMode&&job.originalMode!=='NORMAL')try{await soap('AVTransport','SetPlayMode',{InstanceID:0,NewPlayMode:job.originalMode},target);}catch{}
+      if(shuffleBeforeImport===undefined)shuffleModes.delete(target);else shuffleModes.set(target,shuffleBeforeImport);
+      if(modeBeforeImport&&modeBeforeImport!=='NORMAL')try{await soap('AVTransport','SetPlayMode',{InstanceID:0,NewPlayMode:modeBeforeImport},target);}catch{}
       throw error;
     }
   });
+}
+async function rebuildManagedTail(target,enabled,restoreMode){
+  if(!cached||cached.id!==selectedPlaylistId)return false;
+  const list=cached;
+  let job=queueImports.get(target);
+  if(!job||job.playlistId!==list.id||job.account!==historyAccount()||!['building','complete'].includes(job.phase)){
+    const match=await matchingPlaylistOrder(target,list.songs);
+    if(!match)return false;
+    job={phase:'complete',playlistId:list.id,account:historyAccount(),title:list.title,selectedTitle:'',added:match.order.length,total:match.order.length,order:match.order,queueUpdateId:match.updateId,modeRestored:true};
+  }
+  const queueState=await browse('Q:0',0,1,target);
+  if(queueState.total!==job.added)return false;
+  if(job.phase==='complete'&&requiresQueueRecheck(job.queueUpdateId,queueState.updateId)){
+    const match=await matchingPlaylistOrder(target,list.songs);
+    if(!match)return false;
+    job.order=match.order;job.queueUpdateId=match.updateId;
+  }
+  const position=await soap('AVTransport','GetPositionInfo',{InstanceID:0},target);
+  const current=Number(tag(position,'Track'));
+  if(!Number.isInteger(current)||current<1||current>job.order.length)return false;
+  let currentIndex=job.order[current-1];
+  if(songIdFromUri(tag(position,'TrackURI'))!==list.songs[currentIndex]?.id&&job.phase==='complete'){
+    const match=await matchingPlaylistOrder(target,list.songs);
+    if(match){job.order=match.order;job.queueUpdateId=match.updateId;currentIndex=job.order[current-1];}
+  }
+  if(songIdFromUri(tag(position,'TrackURI'))!==list.songs[currentIndex]?.id)return false;
+  const prefix=job.order.slice(0,current);
+  const remaining=remainingPlaylistIndices(list.songs.length,currentIndex,prefix);
+  const desired=enabled?shuffledIndices(remaining,undefined,job.order.slice(current)):remaining;
+  if(!desired.length||job.phase==='complete'&&desired.length===job.order.length-current&&desired.every((index,offset)=>index===job.order[current+offset])){
+    queueImports.set(target,job);return true;
+  }
+  const context=await qqQueueContext(target);
+  const first=desired[0],oldCount=queueState.total;
+  await replaceQueueTailSafely({
+    appendFirst:()=>enqueueSong(target,list.songs[first],false,context),
+    validateFirst:async stagedNumber=>{
+      const staged=items((await browse('Q:0',oldCount,1,target)).xml)[0];
+      if(stagedNumber!==oldCount+1||songIdFromItem(staged)!==list.songs[first].id)
+        throw Error('队列在重新排序时已变化，请刷新队列。');
+    },
+    removeOldTail:async()=>{
+      if(oldCount>current)try{
+        await soap('AVTransport','RemoveTrackRangeFromQueue',
+          {InstanceID:0,UpdateID:0,StartingIndex:current+1,NumberOfTracks:oldCount-current},target);
+      }catch(error){
+        const page=await browse('Q:0',current,1,target);
+        if(page.total===current+1&&songIdFromItem(items(page.xml)[0]||'')===list.songs[first].id)return;
+        throw error;
+      }
+    },
+    rollbackFirst:async()=>{
+      const page=await browse('Q:0',oldCount,1,target);
+      if(page.total!==oldCount+1)throw Error('队列在随机排序时已变化，请刷新播放队列。');
+      const staged=items(page.xml)[0];
+      if(songIdFromItem(staged)===list.songs[first].id)
+        await soap('AVTransport','RemoveTrackFromQueue',{InstanceID:0,ObjectID:`Q:0/${oldCount+1}`,UpdateID:0},target);
+    }
+  });
+  job.cancelled=true;job.phase='cancelled';
+  const replacement={phase:'building',playlistId:list.id,account:historyAccount(),title:list.title,
+    selectedTitle:list.songs[currentIndex].title,added:current+1,total:list.songs.length,order:[...prefix,first],error:'',originalMode:withoutSonosShuffle(job.originalMode||restoreMode)};
+  queueImports.set(target,replacement);
+  finishQueueImport(target,replacement,list,context,desired.slice(1).map(index=>({index,position:0})));
+  return true;
 }
 async function addSongToQueue(mid,placement,roomId){
   if(!['next','end'].includes(placement))throw Error('加入队列的位置无效。');
@@ -543,10 +620,10 @@ async function status(roomId){
       }
     }
   }
-  return {room,roomId:selectedRoomId,groupSize,model,ip,playing:tag(transport,'CurrentTransportState')==='PLAYING',state:tag(transport,'CurrentTransportState'),volume:Number(tag(volume,'CurrentVolume')),groupVolume:groupSize>1?Number(tag(groupVolume,'CurrentVolume')):null,mute:tag(mute,'CurrentMute')==='1',shuffle:mode.startsWith('SHUFFLE'),repeatOne:['REPEAT_ONE','SHUFFLE_REPEAT_ONE'].includes(mode),repeatAll:['REPEAT_ALL','SHUFFLE'].includes(mode),crossfade:tag(crossfade,'CrossfadeMode')==='1',playMode:mode,title,artist,album,albumArt,songId,track:Number(tag(position,'Track')),position:tag(position,'RelTime'),duration};
+  return {room,roomId:selectedRoomId,groupSize,model,ip,playing:tag(transport,'CurrentTransportState')==='PLAYING',state:tag(transport,'CurrentTransportState'),volume:Number(tag(volume,'CurrentVolume')),groupVolume:groupSize>1?Number(tag(groupVolume,'CurrentVolume')):null,mute:tag(mute,'CurrentMute')==='1',shuffle:shuffleModes.get(target)===true||mode.startsWith('SHUFFLE'),repeatOne:['REPEAT_ONE','SHUFFLE_REPEAT_ONE'].includes(mode),repeatAll:['REPEAT_ALL','SHUFFLE'].includes(mode),crossfade:tag(crossfade,'CrossfadeMode')==='1',playMode:mode,title,artist,album,albumArt,songId,track:Number(tag(position,'Track')),position:tag(position,'RelTime'),duration};
 }
-async function control(action,value,roomId){
-  const {target,device,groupSize}=await coordinator(roomId), transport=(name,args={})=>soap('AVTransport',name,{InstanceID:0,...args},target);
+async function control(action,value,roomId,selected){
+  const {target,device,groupSize}=selected||await coordinator(roomId), transport=(name,args={})=>soap('AVTransport',name,{InstanceID:0,...args},target);
   if(action==='play')await transport('Play',{Speed:1}); else if(action==='pause')await transport('Pause');
   else if(action==='next'||action==='previous'){
     await transport(action==='next'?'Next':'Previous');
@@ -565,15 +642,34 @@ async function control(action,value,roomId){
     const targetTime=`${Math.floor(seconds/3600)}:${String(Math.floor(seconds/60)%60).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}`;
     await transport('Seek',{Unit:'REL_TIME',Target:targetTime});
   }
-  else if(action==='shuffle'||action==='repeatOne'||action==='repeatAll'){
+  else if(action==='shuffle'){
+    if(typeof value!=='boolean')throw Error('随机播放值无效。');
+    const mode=tag(await transport('GetTransportSettings'),'PlayMode');
+    const normalMode=withoutSonosShuffle(mode);
+    if(mode!==normalMode)await transport('SetPlayMode',{NewPlayMode:normalMode});
+    let managed=false;
+    try{managed=await rebuildManagedTail(target,value,normalMode);}catch(error){
+      if(mode!==normalMode)try{await transport('SetPlayMode',{NewPlayMode:mode});}catch{}
+      throw error;
+    }
+    if(!managed){
+      const repeat=normalMode==='REPEAT_ALL'?'all':normalMode==='REPEAT_ONE'?'one':'none';
+      const sonosMode=value?{none:'SHUFFLE_NOREPEAT',all:'SHUFFLE',one:'SHUFFLE_REPEAT_ONE'}[repeat]:normalMode;
+      if(sonosMode!==normalMode)await transport('SetPlayMode',{NewPlayMode:sonosMode});
+    }
+    shuffleModes.set(target,value);
+  }
+  else if(action==='repeatOne'||action==='repeatAll'){
     if(typeof value!=='boolean')throw Error('播放模式值无效。');
     const mode=tag(await transport('GetTransportSettings'),'PlayMode');
     const shuffled=mode.startsWith('SHUFFLE');
     const repeat=['REPEAT_ALL','SHUFFLE'].includes(mode)?'all':['REPEAT_ONE','SHUFFLE_REPEAT_ONE'].includes(mode)?'one':'none';
-    const nextShuffle=action==='shuffle'?value:shuffled;
+    const nextShuffle=shuffled;
     const nextRepeat=action==='repeatOne'?(value?'one':'none'):action==='repeatAll'?(value?'all':'none'):repeat;
     const modes=nextShuffle?{none:'SHUFFLE_NOREPEAT',all:'SHUFFLE',one:'SHUFFLE_REPEAT_ONE'}:{none:'NORMAL',all:'REPEAT_ALL',one:'REPEAT_ONE'};
     await transport('SetPlayMode',{NewPlayMode:modes[nextRepeat]});
+    const job=queueImports.get(target);
+    if(shuffleModes.get(target)===true&&job?.phase==='building')job.originalMode=modes[nextRepeat];
   }else throw Error('未知控制命令。');
 }
 const send=(res,code,value)=>{res.writeHead(code,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(value));};
@@ -656,9 +752,16 @@ http.createServer(async(req,res)=>{try{
     await saveSelectedPlaylist(id);selectedPlaylistId=id;cached=null;return send(res,200,{selectedId:id});
   }
   if(req.method==='GET'&&pathname==='/api/playlist'){const p=await playlist(new URL(req.url,`http://${req.headers.host||'localhost'}`).searchParams.has('refresh'));return send(res,200,{id:p.id,title:p.title,songs:p.songs,updatedAt:new Date(p.at).toISOString()});}
-  if(req.method==='POST'&&pathname==='/api/control'){const b=await requestBody(req);await control(b.action,b.value,roomId);return send(res,200,{ok:true});}
+  if(req.method==='POST'&&pathname==='/api/control'){
+    const b=await requestBody(req);
+    if(['play','pause','next','previous','seek','shuffle'].includes(b.action)){
+      const selected=await coordinator(roomId);
+      await withQueueMutation(selected.target,()=>control(b.action,b.value,roomId,selected));
+    }else await control(b.action,b.value,roomId);
+    return send(res,200,{ok:true});
+  }
   if(req.method==='POST'&&pathname==='/api/play'){await assertQueueIdle(roomId);const b=await requestBody(req);return send(res,200,{ok:true,...await playSong(String(b.mid||''),roomId)});}
   if(req.method==='POST'&&pathname==='/api/play/playlist'){const b=await requestBody(req);return send(res,200,{ok:true,...await startPlaylistPlayback(b,roomId)});}
-  const file=pathname==='/'?'index.html':pathname.slice(1);if(req.method!=='GET'||!['index.html','app.js','style.css','favicon.svg'].includes(file))return send(res,404,{error:'页面不存在。'});
-  const contents=await readFile(path.join(dir,file));res.writeHead(200,{'Content-Type':{'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.svg':'image/svg+xml'}[path.extname(file)]});res.end(contents);
+  const file=pathname==='/'?'index.html':pathname.slice(1);if(req.method!=='GET'||!['index.html','app.js','transport-sync.mjs','style.css','favicon.svg'].includes(file))return send(res,404,{error:'页面不存在。'});
+  const contents=await readFile(path.join(dir,file));res.writeHead(200,{'Content-Type':{'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.mjs':'text/javascript; charset=utf-8','.svg':'image/svg+xml'}[path.extname(file)]});res.end(contents);
 }catch(e){console.error(e);send(res,500,{error:e.message||'服务出错。'});}}).listen(port,host,()=>console.log(`Sonos web http://${host}:${port}; Sonos ${ip}`));

@@ -20,3 +20,13 @@ test('queue playback and editing both send the displayed track fingerprint',asyn
   assert.match(script,/\/api\/queue\/play[^\n]*key:track\.key/);
   assert.match(script,/\/api\/queue\/edit[^\n]*key:track\.key/);
 });
+
+test('the transport state module is served with a JavaScript content type',async()=>{
+  const [script,server]=await Promise.all([
+    readFile(new URL('../public/app.js',import.meta.url),'utf8'),
+    readFile(new URL('../server.mjs',import.meta.url),'utf8')
+  ]);
+  assert.match(script,/from '\.\/transport-sync\.mjs'/);
+  assert.match(server,/\['index\.html','app\.js','transport-sync\.mjs'/);
+  assert.match(server,/'\.mjs':'text\/javascript/);
+});

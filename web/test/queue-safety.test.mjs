@@ -1,6 +1,54 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {assertQueueTrack,matchPlaylistQueue,replaceQueueSafely,requiresQueueRecheck} from '../queue-safety.mjs';
+import {assertQueueTrack,matchPlaylistQueue,remainingPlaylistIndices,replaceQueueSafely,replaceQueueTailSafely,requiresQueueRecheck,shuffledIndices,withoutSonosShuffle} from '../queue-safety.mjs';
+
+test('each activation can create a different complete playlist order',()=>{
+  const source=[1,2,3,4,5];
+  const first=shuffledIndices(source,()=>0);
+  const second=shuffledIndices(source,end=>end-1);
+  assert.deepEqual([...first].sort(),source);
+  assert.deepEqual([...second].sort(),source);
+  assert.notDeepEqual(first,second);
+  assert.notDeepEqual(second,source);
+  assert.deepEqual(source,[1,2,3,4,5]);
+  assert.deepEqual(shuffledIndices(source,size=>size===2?0:size-1,[2,1,3,4,5]),source);
+});
+
+test('reshuffling keeps played tracks and current track out of the new tail',()=>{
+  assert.deepEqual(remainingPlaylistIndices(6,2,[0,2,4]),[3,5,1]);
+  assert.deepEqual(remainingPlaylistIndices(1,0,[0]),[]);
+});
+
+test('custom shuffle removes Sonos fixed shuffle without losing repeat settings',()=>{
+  assert.equal(withoutSonosShuffle('SHUFFLE_NOREPEAT'),'NORMAL');
+  assert.equal(withoutSonosShuffle('SHUFFLE'),'REPEAT_ALL');
+  assert.equal(withoutSonosShuffle('SHUFFLE_REPEAT_ONE'),'REPEAT_ONE');
+  assert.equal(withoutSonosShuffle('NORMAL'),'NORMAL');
+});
+
+test('a new random next track is ready before the old tail is removed',async()=>{
+  const queue=['played','current','old-next','old-last'];
+  const events=[];
+  await replaceQueueTailSafely({
+    appendFirst:async()=>{queue.push('random-next');events.push('append');return 5;},
+    validateFirst:async number=>{assert.equal(number,5);assert.equal(queue[4],'random-next');},
+    removeOldTail:async()=>{assert.equal(queue[1],'current');queue.splice(2,2);events.push('remove');},
+    rollbackFirst:async()=>{throw Error('unexpected rollback');}
+  });
+  assert.deepEqual(queue,['played','current','random-next']);
+  assert.deepEqual(events,['append','remove']);
+});
+
+test('a failed random tail switch preserves the old upcoming songs',async()=>{
+  const queue=['current','old-next','old-last'];
+  await assert.rejects(replaceQueueTailSafely({
+    appendFirst:async()=>{queue.push('random-next');return 4;},
+    validateFirst:async()=>{},
+    removeOldTail:async()=>{throw Error('remove failed');},
+    rollbackFirst:async()=>{assert.equal(queue.pop(),'random-next');}
+  }),/remove failed/);
+  assert.deepEqual(queue,['current','old-next','old-last']);
+});
 
 test('reuses a complete queue after restart, including shuffle and duplicate songs',()=>{
   assert.deepEqual(matchPlaylistQueue([11,22,11,33],[33,11,22,11]),[3,0,1,2]);
