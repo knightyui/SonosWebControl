@@ -1,9 +1,11 @@
 import http from 'node:http';
 import {readFile} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {beginQr,loadSession,pollQr,saveSelectedPlaylist,saveSession,selectSession,selectedPlaylist,sessionCookie,sessionState} from './qq-session.mjs';
 import {clearPlayHistory,loadPlayHistory,recentPlays,recordPlay} from './play-history.mjs';
+import {assertQueueTrack,matchPlaylistQueue,replaceQueueSafely,requiresQueueRecheck} from './queue-safety.mjs';
 
 const ip=process.env.SONOS_IP;
 if(!ip)throw Error('请设置 SONOS_IP，例如 SONOS_IP=192.168.x.x npm start。');
@@ -44,9 +46,14 @@ async function coordinator(roomId){
 }
 async function browse(id,start=0,count=200,target=base){
   const x=await soap('ContentDirectory','Browse',{ObjectID:id,BrowseFlag:'BrowseDirectChildren',Filter:'*',StartingIndex:start,RequestedCount:count,SortCriteria:''},target);
-  return {xml:tag(x,'Result'),total:Number(tag(x,'TotalMatches'))};
+  return {xml:tag(x,'Result'),total:Number(tag(x,'TotalMatches')),updateId:tag(x,'UpdateID')};
 }
 const items=x=>[...x.matchAll(/<item\b[^>]*>[\s\S]*?<\/item>/g)].map(m=>m[0]);
+const songIdFromUri=uri=>Number(/SONG(?:%3[aA]|:)(\d+)(?:(?:%3[aA]|:)|\.)/.exec(uri)?.[1]||0);
+const songIdFromItem=item=>songIdFromUri(tag(item,'res'));
+const queueItemNumber=item=>Number(/Q:0\/(\d+)/.exec(attr(item,'id'))?.[1]||0);
+const queueItemKey=item=>createHash('sha256').update([tag(item,'res'),tag(item,'title'),tag(item,'creator')].join('\0')).digest('hex').slice(0,24);
+const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 let cached;
 let selectedPlaylistId='liked';
 let playlistCatalog;
@@ -206,6 +213,32 @@ async function queueTrack(target,id){
   }
   return null;
 }
+async function matchingPlaylistOrder(target,songs){
+  const first=await browse('Q:0',0,200,target);
+  if(first.total!==songs.length||!first.total)return null;
+  const queueIds=items(first.xml).map(songIdFromItem);
+  for(let start=200;start<first.total;start+=200){
+    const page=await browse('Q:0',start,200,target);
+    queueIds.push(...items(page.xml).map(songIdFromItem));
+  }
+  const order=matchPlaylistQueue(songs.map(song=>song.id),queueIds);
+  return order?{order,updateId:first.updateId}:null;
+}
+async function confirmQueuePlayback(target,number,songId){
+  const deadline=Date.now()+6500;
+  let confirmed=0;
+  while(Date.now()<deadline){
+    const [transport,position]=await Promise.all([
+      soap('AVTransport','GetTransportInfo',{InstanceID:0},target),
+      soap('AVTransport','GetPositionInfo',{InstanceID:0},target)
+    ]);
+    const activeId=songIdFromUri(tag(position,'TrackURI'));
+    confirmed=tag(transport,'CurrentTransportState')==='PLAYING'&&Number(tag(position,'Track'))===number&&activeId===songId?confirmed+1:0;
+    if(confirmed>=2)return;
+    await delay(300);
+  }
+  throw Error('Sonos 未确认播放所选歌曲，原队列已保留。');
+}
 async function qqQueueContext(target){
     const fav=items((await browse('FV:2',0,500)).xml).find(x=>tag(x,'title').includes('我喜欢')&&x.includes('PLAYLIST_FAV'));
     const favoriteUri=fav?tag(fav,'res'):'';
@@ -279,17 +312,36 @@ async function startPlaylistPlayback(input,roomId){
   if(!song||song.mid!==String(input.mid||''))throw Error('歌曲与当前歌单不一致，请刷新后重试。');
   const {target,coordinatorId}=await coordinator(roomId);
   return withQueueMutation(target,async()=>{
-    const previous=queueImports.get(target);
+    let previous=queueImports.get(target);
+    if(!previous||['error','cancelled'].includes(previous.phase)){
+      const match=await matchingPlaylistOrder(target,list.songs);
+      if(match){
+        previous={phase:'complete',playlistId:list.id,account:historyAccount(),title:list.title,selectedTitle:song.title,added:match.order.length,total:match.order.length,order:match.order,queueUpdateId:match.updateId,error:'',finishedAt:Date.now(),modeRestored:true};
+        queueImports.set(target,previous);
+      }
+    }
     if(previous?.playlistId===list.id&&previous.account===historyAccount()&&['building','complete'].includes(previous.phase)){
-      const position=previous.order.indexOf(index)+1;
-      if(position){
-        const item=items((await browse('Q:0',position-1,1,target)).xml)[0]||'';
-        const queuedId=Number(/SONG(?:%3[aA]|:)(\d+)(?:(?:%3[aA]|:)|\.)/.exec(tag(item,'res'))?.[1]||0);
-        if(queuedId===song.id){
-          await soap('AVTransport','Seek',{InstanceID:0,Unit:'TRACK_NR',Target:position},target);
-          await soap('AVTransport','Play',{InstanceID:0,Speed:1},target);
-          previous.selectedTitle=song.title;
-          return {title:song.title,artist:song.artist,queueNumber:position,import:visibleQueueImport(previous)};
+      let position=previous.order.indexOf(index)+1;
+      const expectedCount=previous.phase==='complete'?previous.total:previous.added;
+      const queueState=await browse('Q:0',0,1,target);
+      if(position&&queueState.total===expectedCount){
+        if(previous.phase==='complete'&&requiresQueueRecheck(previous.queueUpdateId,queueState.updateId)){
+          const match=await matchingPlaylistOrder(target,list.songs);
+          if(match){previous.order=match.order;previous.queueUpdateId=match.updateId;position=match.order.indexOf(index)+1;}
+          else position=0;
+        }
+        if(position){
+          let item=items((await browse('Q:0',position-1,1,target)).xml)[0]||'';
+          if(songIdFromItem(item)!==song.id&&previous.phase==='complete'){
+            const match=await matchingPlaylistOrder(target,list.songs);
+            if(match){previous.order=match.order;previous.queueUpdateId=match.updateId;position=match.order.indexOf(index)+1;item=items((await browse('Q:0',position-1,1,target)).xml)[0]||'';}
+          }
+          if(songIdFromItem(item)===song.id){
+            await soap('AVTransport','Seek',{InstanceID:0,Unit:'TRACK_NR',Target:position},target);
+            await soap('AVTransport','Play',{InstanceID:0,Speed:1},target);
+            previous.selectedTitle=song.title;
+            return {title:song.title,artist:song.artist,queueNumber:position,import:visibleQueueImport(previous)};
+          }
         }
       }
     }
@@ -302,11 +354,33 @@ async function startPlaylistPlayback(input,roomId){
       const mode=tag(await soap('AVTransport','GetTransportSettings',{InstanceID:0},target),'PlayMode');
       job.originalMode=inheritMode&&previous.originalMode?previous.originalMode:mode;
       if(mode&&mode!=='NORMAL')await soap('AVTransport','SetPlayMode',{InstanceID:0,NewPlayMode:'NORMAL'},target);
-      await soap('AVTransport','RemoveAllTracksFromQueue',{InstanceID:0},target);
-      await enqueueSong(target,song,false,context);
-      await soap('AVTransport','SetAVTransportURI',{InstanceID:0,CurrentURI:`x-rincon-queue:${coordinatorId}#0`,CurrentURIMetaData:''},target);
-      await soap('AVTransport','Seek',{InstanceID:0,Unit:'TRACK_NR',Target:1},target);
-      await soap('AVTransport','Play',{InstanceID:0,Speed:1},target);
+      const oldCount=(await browse('Q:0',0,1,target)).total;
+      await replaceQueueSafely({
+        oldCount,
+        append:()=>enqueueSong(target,song,false,context),
+        play:async number=>{
+          await soap('AVTransport','SetAVTransportURI',{InstanceID:0,CurrentURI:`x-rincon-queue:${coordinatorId}#0`,CurrentURIMetaData:''},target);
+          await soap('AVTransport','Seek',{InstanceID:0,Unit:'TRACK_NR',Target:number},target);
+          await soap('AVTransport','Play',{InstanceID:0,Speed:1},target);
+          await confirmQueuePlayback(target,number,song.id);
+        },
+        removeStaged:async number=>{
+          const page=await browse('Q:0',oldCount,1,target);
+          if(page.total===oldCount)return;
+          const item=items(page.xml)[0];
+          if(page.total!==oldCount+1||!item||songIdFromItem(item)!==song.id||(number&&queueItemNumber(item)!==number))
+            throw Error('队列在切换期间已变化，请刷新队列并检查末尾曲目。');
+          const position=await soap('AVTransport','GetPositionInfo',{InstanceID:0},target);
+          if(songIdFromUri(tag(position,'TrackURI'))===song.id)
+            throw Error('音箱仍指向新歌曲，原队列已保留；请刷新队列检查播放状态。');
+          await soap('AVTransport','RemoveTrackFromQueue',{InstanceID:0,ObjectID:`Q:0/${oldCount+1}`,UpdateID:0},target);
+        },
+        removeOld:async count=>{
+          const page=await browse('Q:0',count,1,target);
+          if(page.total!==count+1||songIdFromItem(items(page.xml)[0]||'')!==song.id)throw Error('队列在切换期间已变化，旧队列已保留。请刷新后重试。');
+          await soap('AVTransport','RemoveTrackRangeFromQueue',{InstanceID:0,UpdateID:0,StartingIndex:1,NumberOfTracks:count},target);
+        }
+      });
       job.phase='building';job.added=1;job.order=[index];
       void (async()=>{
         try{
@@ -323,9 +397,9 @@ async function startPlaylistPlayback(input,roomId){
           }
           await withQueueMutation(target,async()=>{
             if(job.cancelled)return;
-            const actual=(await browse('Q:0',0,1,target)).total;
-            if(actual!==job.total)throw Error(`队列曲目数不一致：Sonos 返回 ${actual} 首。`);
-            job.phase='complete';job.finishedAt=Date.now();
+            const queueState=await browse('Q:0',0,1,target);
+            if(queueState.total!==job.total)throw Error(`队列曲目数不一致：Sonos 返回 ${queueState.total} 首。`);
+            job.phase='complete';job.finishedAt=Date.now();job.queueUpdateId=queueState.updateId;
           });
         }catch(error){
           if(!job.cancelled){job.phase='error';job.error=`已导入 ${job.added}/${job.total} 首；${error.message}`;console.error('歌单队列导入失败',error);}
@@ -360,28 +434,30 @@ async function queuePage(start=0,roomId){
   for(const song of searchedSongs.values())if(!songLookup.has(song.id))songLookup.set(song.id,song);
   if(!songLookup.size){try{songLookup=new Map((await playlist()).songs.map(song=>[song.id,song]));}catch{}}
   const tracks=items(page.xml).map(item=>{
-    const number=Number(/Q:0\/(\d+)/.exec(attr(item,'id'))?.[1]||0);
-    const songId=Number(/SONG(?:%3[aA]|:)(\d+)(?:(?:%3[aA]|:)|\.)/.exec(tag(item,'res'))?.[1]||0);
+    const number=queueItemNumber(item);
+    const songId=songIdFromItem(item);
     const song=songLookup.get(songId);
-    return {number,songId,title:tag(item,'title')||song?.title||'未知歌曲',artist:tag(item,'creator')||song?.artist||'',album:tag(item,'album')||song?.album||'',albumMid:song?.albumMid||''};
+    return {number,songId,key:queueItemKey(item),title:tag(item,'title')||song?.title||'未知歌曲',artist:tag(item,'creator')||song?.artist||'',album:tag(item,'album')||song?.album||'',albumMid:song?.albumMid||''};
   }).filter(track=>track.number);
   return {tracks,total:page.total,start};
 }
-async function playQueueTrack(number,roomId){
+async function playQueueTrack(input,roomId){
+  const number=Number(input.number);
   if(!Number.isInteger(number)||number<1||number>10000)throw Error('队列位置无效。');
+  if(!/^[a-f0-9]{24}$/.test(String(input.key||'')))throw Error('请刷新播放队列后重试。');
   const {target}=await coordinator(roomId);
   const page=await browse('Q:0',number-1,1,target);
-  if(!items(page.xml).some(item=>Number(/Q:0\/(\d+)/.exec(attr(item,'id'))?.[1])===number))throw Error('该歌曲已不在队列中，请刷新队列。');
+  const item=items(page.xml)[0];
+  assertQueueTrack(item?{number:queueItemNumber(item),key:queueItemKey(item)}:null,{number,key:input.key});
   await soap('AVTransport','Seek',{InstanceID:0,Unit:'TRACK_NR',Target:number},target);
   await soap('AVTransport','Play',{InstanceID:0,Speed:1},target);
 }
 async function editQueue(input,roomId){
   const number=Number(input.number),{target}=await coordinator(roomId);
   if(!Number.isInteger(number)||number<1||number>10000)throw Error('队列位置无效。');
+  if(!/^[a-f0-9]{24}$/.test(String(input.key||'')))throw Error('请刷新播放队列后重试。');
   const page=await browse('Q:0',number-1,1,target),item=items(page.xml)[0];
-  if(!item||Number(/Q:0\/(\d+)/.exec(attr(item,'id'))?.[1])!==number)throw Error('队列已变化，请刷新后重试。');
-  const actualId=Number(/SONG(?:%3[aA]|:)(\d+)(?:(?:%3[aA]|:)|\.)/.exec(tag(item,'res'))?.[1]||0);
-  if(input.songId!=null&&Number(input.songId)!==actualId)throw Error('队列已变化，请刷新后重试。');
+  assertQueueTrack(item?{number:queueItemNumber(item),key:queueItemKey(item)}:null,{number,key:input.key});
   if(input.action==='remove')await soap('AVTransport','RemoveTrackFromQueue',{InstanceID:0,ObjectID:`Q:0/${number}`,UpdateID:0},target);
   else if(input.action==='move'){
     const before=Number(input.before);
@@ -520,7 +596,7 @@ http.createServer(async(req,res)=>{try{
     const {target}=await coordinator(roomId);return send(res,200,{import:visibleQueueImport(queueImports.get(target))});
   }
   if(req.method==='POST'&&pathname==='/api/queue/play'){
-    await assertQueueIdle(roomId);const body=await requestBody(req);await playQueueTrack(Number(body.number),roomId);return send(res,200,{ok:true});
+    await assertQueueIdle(roomId);const body=await requestBody(req);await playQueueTrack(body,roomId);return send(res,200,{ok:true});
   }
   if(req.method==='POST'&&pathname==='/api/queue/edit'){await assertQueueIdle(roomId);await editQueue(await requestBody(req),roomId);return send(res,200,{ok:true});}
   if(req.method==='POST'&&pathname==='/api/queue/add'){

@@ -671,7 +671,7 @@ async function loadQueue(start=0,focusCurrent=false){
       info.append(title,artist);row.append(number,art,info);
       const more=document.createElement('button');more.type='button';more.className='queue-more-trigger';more.setAttribute('aria-label',`${track.title}的队列操作`);more.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>';
       more.onclick=e=>{chosenQueueTrack=track;$('queue-action-name').textContent=`${track.number}. ${track.title} · ${track.artist}`;$('queue-move-up').disabled=track.number<=1;$('queue-move-down').disabled=track.number>=queueTotal;showDialog('queue-action-dialog',e);updateMiniVisibility();};
-      row.onclick=async()=>{row.blur();row.disabled=true;try{await api('/api/queue/play',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({number:track.number})});beginTransportSync(true);await settleTransport(true);markCurrentQueueTrack();toast(`正在播放：${track.title}`);}catch(e){expectedPlaying=null;expectedPosition=null;transportSettlingUntil=0;await updateStatus();toast(e.message);}finally{row.disabled=false;}};
+      row.onclick=async()=>{row.blur();row.disabled=true;try{await api('/api/queue/play',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({number:track.number,key:track.key})});beginTransportSync(true);await settleTransport(true);markCurrentQueueTrack();toast(`正在播放：${track.title}`);}catch(e){expectedPlaying=null;expectedPosition=null;transportSettlingUntil=0;await updateStatus();toast(e.message);}finally{row.disabled=false;}};
       entry.append(row,more);fragment.append(entry);
     }
     $('queue-list').replaceChildren(fragment);queueStart=start;queueTotal=data.total;
@@ -698,7 +698,7 @@ $('queue-action-dialog').addEventListener('close',updateMiniVisibility);
 async function editChosenQueue(action,before){
   const track=chosenQueueTrack;if(!track)return;
   const buttons=$('queue-action-dialog').querySelectorAll('button');for(const button of buttons)button.disabled=true;
-  try{await api('/api/queue/edit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,number:track.number,songId:track.songId,before})});$('queue-action-dialog').close();await loadQueue(queueStart);await updateStatus();toast(action==='remove'?'已移出队列':'已调整队列顺序');}
+  try{await api('/api/queue/edit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,number:track.number,key:track.key,before})});$('queue-action-dialog').close();await loadQueue(queueStart);await updateStatus();toast(action==='remove'?'已移出队列':'已调整队列顺序');}
   catch(e){toast(e.message);}finally{for(const button of buttons)button.disabled=false;}
 }
 $('queue-move-up').onclick=()=>editChosenQueue('move',chosenQueueTrack.number-1);
@@ -779,7 +779,7 @@ $('sleep-open').onclick=e=>{$('utilities-dialog').close();showDialog('sleep-dial
 $('sleep-close').onclick=()=>$('sleep-dialog').close();
 $('sleep-dialog').addEventListener('close',updateMiniVisibility);
 $('sleep-form').noValidate=true;
-$('sleep-time').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();$('sleep-form button[value="until"]').click();}});
+$('sleep-time').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();document.querySelector('#sleep-form button[value="until"]').click();}});
 $('sleep-form').onsubmit=e=>{
   e.preventDefault();
   if(e.submitter?.value==='minutes')return setSleep({mode:'minutes',minutes:Number($('sleep-minutes').value)});

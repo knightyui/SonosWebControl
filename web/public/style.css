@@ -742,7 +742,6 @@ dialog[open]::backdrop{animation:sonos-backdrop-enter .23s ease-out both}
 .controls .play-button{width:60px;min-width:60px;height:60px;min-height:60px;background:#ffffff16}
 .controls .play-button svg{width:26px;height:26px}
 .controls .shuffle-button.active,.controls .repeat-button.active{background:#fff;color:#202424}
-.player-utilities #queue-open{background:#fff;color:#252b2d;border-color:#fff}
 .player-utilities #utilities-open{background:#ffffff1b;border-color:#ffffff38}
 #seek::-webkit-slider-runnable-track,#volume::-webkit-slider-runnable-track,#mini-seek::-webkit-slider-runnable-track,#mini-volume::-webkit-slider-runnable-track,#queue-volume::-webkit-slider-runnable-track{height:5px;border:0;border-radius:99px;background:linear-gradient(to right,#fff 0 var(--range-fill,0%),#ffffff38 var(--range-fill,0%) 100%)}
 #seek::-moz-range-track,#volume::-moz-range-track,#mini-seek::-moz-range-track,#mini-volume::-moz-range-track,#queue-volume::-moz-range-track{height:5px;border:0;border-radius:99px;background:linear-gradient(to right,#fff 0 var(--range-fill,0%),#ffffff38 var(--range-fill,0%) 100%)}
