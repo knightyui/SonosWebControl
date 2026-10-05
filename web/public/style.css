@@ -897,3 +897,20 @@ body:has(#queue-dialog[open]) .player-utilities #queue-open{background:#fff;colo
   .mini-player .mini-progress span{flex:none;min-width:30px;font-variant-numeric:tabular-nums}
   .mini-player .mini-progress span:last-child{text-align:right}
 }
+
+/* Library navigation stays readable when Safari enlarges page text. */
+.list-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0}
+.list-heading .list-state{min-width:0}
+.locate-playing,.search-more{min-height:44px;border:0;border-radius:12px;background:#ffffff17;color:var(--text-primary,#fff);font:inherit;font-size:.875rem;font-weight:600;cursor:pointer}
+.locate-playing{flex:none;padding:0 14px}
+.search-more{display:block;width:100%;margin:12px 0 4px}
+.song.now-playing .song-name{font-weight:750}
+.song.now-playing .song-name::before{content:'♫';display:inline-block;margin-right:.35em;color:var(--accent,#fff);font-size:.85em}
+@media(max-width:720px){
+  .list-heading{align-items:flex-start;flex-wrap:wrap}
+  .locate-playing{margin-left:auto}
+  .song-name,.queue-info strong{font-size:1rem;white-space:normal;overflow-wrap:anywhere}
+  .song-sub,.list-state,.utility-copy small{font-size:.875rem}
+  .mobile-nav button{font-size:.8125rem}
+  .mini-player .mini-progress{font-size:.75rem}
+}

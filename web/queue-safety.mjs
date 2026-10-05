@@ -1,5 +1,16 @@
 import {randomInt} from 'node:crypto';
 
+export function createKeyedMutationQueue(){
+  const pending=new Map();
+  return (key,action)=>{
+    const previous=pending.get(key)||Promise.resolve();
+    const current=previous.catch(()=>{}).then(action);
+    pending.set(key,current);
+    void current.finally(()=>{if(pending.get(key)===current)pending.delete(key);}).catch(()=>{});
+    return current;
+  };
+}
+
 export function shuffledIndices(indices,choose=randomInt,avoid=indices){
   const result=[...indices];
   for(let end=result.length-1;end>0;end--){

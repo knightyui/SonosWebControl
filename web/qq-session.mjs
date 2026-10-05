@@ -1,9 +1,9 @@
-import {readFile, writeFile, chmod} from 'node:fs/promises';
+import {readFile, writeFile, chmod, mkdir} from 'node:fs/promises';
 import {randomUUID} from 'node:crypto';
 import path from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {dataDir} from './data-dir.mjs';
 
-const file=path.join(path.dirname(fileURLToPath(import.meta.url)),'.qq-session.json');
+const file=path.join(dataDir,'.qq-session.json');
 let cookie='';
 let active='';
 const accounts=new Map();
@@ -27,7 +27,7 @@ const accountId=value=>{
   const wxuin=/(?:^|;)\s*wxuin=(\d+)/.exec(value)?.[1]||'';
   return uin&&uin!=='0'?uin:wxuin||uin;
 };
-async function persist(){await writeFile(file,JSON.stringify({active,accounts:Object.fromEntries(accounts),selectedPlaylists:Object.fromEntries(selectedPlaylists)}),{encoding:'utf8',mode:0o600});await chmod(file,0o600);}
+async function persist(){await mkdir(dataDir,{recursive:true});await writeFile(file,JSON.stringify({active,accounts:Object.fromEntries(accounts),selectedPlaylists:Object.fromEntries(selectedPlaylists)}),{encoding:'utf8',mode:0o600});await chmod(file,0o600);}
 export async function loadSession(){try{
   const saved=JSON.parse(await readFile(file,'utf8'));
   if(saved.cookie){const valid=checkCookie(saved.cookie);accounts.set(accountId(valid),valid);active=accountId(valid);}

@@ -1,6 +1,33 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {assertQueueTrack,matchPlaylistQueue,remainingPlaylistIndices,replaceQueueSafely,replaceQueueTailSafely,requiresQueueRecheck,shuffledIndices,withoutSonosShuffle} from '../queue-safety.mjs';
+import {assertQueueTrack,createKeyedMutationQueue,matchPlaylistQueue,remainingPlaylistIndices,replaceQueueSafely,replaceQueueTailSafely,requiresQueueRecheck,shuffledIndices,withoutSonosShuffle} from '../queue-safety.mjs';
+
+test('queue mutations on one speaker serialize and recover after a failure',async()=>{
+  const mutate=createKeyedMutationQueue(),events=[];
+  let releaseFirst;
+  let firstStarted;
+  const started=new Promise(resolve=>{firstStarted=resolve;});
+  const gate=new Promise(resolve=>{releaseFirst=resolve;});
+  const first=mutate('living-room',async()=>{events.push('verify old row');firstStarted();await gate;events.push('move row');throw Error('Sonos rejected move');});
+  const second=mutate('living-room',async()=>{events.push('verify current row');events.push('play row');});
+  await started;
+  assert.deepEqual(events,['verify old row']);
+  releaseFirst();
+  await assert.rejects(first,/Sonos rejected move/);
+  await second;
+  assert.deepEqual(events,['verify old row','move row','verify current row','play row']);
+});
+
+test('independent speakers can process queue mutations concurrently',async()=>{
+  const mutate=createKeyedMutationQueue(),events=[];
+  let releaseFirst;
+  const gate=new Promise(resolve=>{releaseFirst=resolve;});
+  const first=mutate('living-room',async()=>{events.push('living start');await gate;events.push('living end');});
+  const second=mutate('bedroom',async()=>{events.push('bedroom run');});
+  await second;
+  assert.deepEqual(events,['living start','bedroom run']);
+  releaseFirst();await first;
+});
 
 test('each activation can create a different complete playlist order',()=>{
   const source=[1,2,3,4,5];
@@ -48,6 +75,26 @@ test('a failed random tail switch preserves the old upcoming songs',async()=>{
     rollbackFirst:async()=>{assert.equal(queue.pop(),'random-next');}
   }),/remove failed/);
   assert.deepEqual(queue,['current','old-next','old-last']);
+});
+
+test('a mismatched staged next track is removed before touching the old tail',async()=>{
+  const queue=['current','old-next'];
+  await assert.rejects(replaceQueueTailSafely({
+    appendFirst:async()=>{queue.push('wrong-track');return 3;},
+    validateFirst:async()=>{throw Error('staged track differs');},
+    removeOldTail:async()=>{throw Error('old tail must not be removed');},
+    rollbackFirst:async()=>{assert.equal(queue.pop(),'wrong-track');}
+  }),/staged track differs/);
+  assert.deepEqual(queue,['current','old-next']);
+});
+
+test('a failed rollback reports both the queue error and cleanup failure',async()=>{
+  await assert.rejects(replaceQueueTailSafely({
+    appendFirst:async()=>3,
+    validateFirst:async()=>{throw Error('staged track differs');},
+    removeOldTail:async()=>{},
+    rollbackFirst:async()=>{throw Error('speaker unavailable');}
+  }),/staged track differs；新曲目清理失败：speaker unavailable/);
 });
 
 test('reuses a complete queue after restart, including shuffle and duplicate songs',()=>{

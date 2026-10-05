@@ -1,0 +1,10 @@
+.git
+.env
+.env.*
+**/.DS_Store
+**/node_modules
+**/.qq-session.json
+**/.play-history.json
+**/*.log
+**/*.log.*
+data/

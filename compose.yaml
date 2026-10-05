@@ -1,0 +1,15 @@
+services:
+  sonos-web:
+    build: .
+    network_mode: host
+    environment:
+      SONOS_IP: ${SONOS_IP:?Set SONOS_IP to the speaker's LAN address}
+      PORT: ${PORT:-38473}
+      HOST: 0.0.0.0
+      SONOS_DATA_DIR: /data
+    volumes:
+      - sonos-data:/data
+    restart: unless-stopped
+
+volumes:
+  sonos-data:

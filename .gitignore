@@ -2,6 +2,7 @@
 node_modules/
 web/.qq-session.json
 web/.play-history.json
+data/
 *.log
 *.log.*
 logs/

@@ -1,8 +1,8 @@
-import {readFile, writeFile, rename, chmod} from 'node:fs/promises';
+import {readFile, writeFile, rename, chmod, mkdir} from 'node:fs/promises';
 import path from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {dataDir} from './data-dir.mjs';
 
-const file=path.join(path.dirname(fileURLToPath(import.meta.url)),'.play-history.json');
+const file=path.join(dataDir,'.play-history.json');
 let history={};
 let writing=Promise.resolve();
 
@@ -15,6 +15,7 @@ export async function loadPlayHistory(){
 
 function persist(){
   writing=writing.catch(()=>{}).then(async()=>{
+    await mkdir(dataDir,{recursive:true});
     const temporary=`${file}.tmp`;
     await writeFile(temporary,JSON.stringify(history),{encoding:'utf8',mode:0o600});
     await chmod(temporary,0o600);

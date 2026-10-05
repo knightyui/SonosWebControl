@@ -5,7 +5,8 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {beginQr,loadSession,pollQr,saveSelectedPlaylist,saveSession,selectSession,selectedPlaylist,sessionCookie,sessionState} from './qq-session.mjs';
 import {clearPlayHistory,loadPlayHistory,recentPlays,recordPlay} from './play-history.mjs';
-import {assertQueueTrack,matchPlaylistQueue,remainingPlaylistIndices,replaceQueueSafely,replaceQueueTailSafely,requiresQueueRecheck,shuffledIndices,withoutSonosShuffle} from './queue-safety.mjs';
+import {assertQueueTrack,createKeyedMutationQueue,matchPlaylistQueue,remainingPlaylistIndices,replaceQueueSafely,replaceQueueTailSafely,requiresQueueRecheck,shuffledIndices,withoutSonosShuffle} from './queue-safety.mjs';
+import {hasMoreSearchResults,parseSearchPage,searchPageSize} from './search-pagination.mjs';
 
 const ip=process.env.SONOS_IP;
 if(!ip)throw Error('请设置 SONOS_IP，例如 SONOS_IP=192.168.x.x npm start。');
@@ -82,7 +83,7 @@ async function playlistPage(id,start,count){
 }
 async function playlists(refresh=false){
   if(playlistCatalog&&!refresh&&Date.now()-playlistCatalog.at<1800000)return playlistCatalog.list;
-  if(!sessionCookie())throw Error('请先在 Mac 本机登录 QQ 音乐。');
+  if(!sessionCookie())throw Error('请先在网页中登录 QQ 音乐。');
   const [liked,createdList,collectedList]=await Promise.all([
     playlistPage('liked',0,1),
     (async()=>{const result=[];for(let start=0;start<1000;start+=200){const page=await qqGet('https://c.y.qq.com/rsc/fcgi-bin/fcg_user_created_diss',{hostuin:qqUin(),sin:start,size:200});if(page.code!==0||!Array.isArray(page.data?.disslist))throw Error('QQ 音乐没有返回自建歌单。');result.push(...page.data.disslist);if(page.data.disslist.length<200)break;}return result;})(),
@@ -105,16 +106,19 @@ async function playlist(refresh=false){
   const songs=all.map(mapSong).filter(s=>s.id&&s.mid);
   cached={id:entry.id,title:entry.title,songs,at:Date.now()};return cached;
 }
-async function searchSongs(query){
+async function searchSongs(query,pageInput){
   const q=String(query||'').trim();if(q.length<2||q.length>80)throw Error('请输入 2 到 80 个字搜索歌曲。');
-  const response=await fetch('https://u.y.qq.com/cgi-bin/musicu.fcg',{method:'POST',headers:{'Content-Type':'application/json',Referer:'https://y.qq.com/'},body:JSON.stringify({req_0:{module:'music.search.SearchCgiService',method:'DoSearchForQQMusicDesktop',param:{search_type:0,query:q,page_num:1,num_per_page:30}}}),signal:AbortSignal.timeout(15000)});
+  const page=parseSearchPage(pageInput);
+  const response=await fetch('https://u.y.qq.com/cgi-bin/musicu.fcg',{method:'POST',headers:{'Content-Type':'application/json',Referer:'https://y.qq.com/'},body:JSON.stringify({req_0:{module:'music.search.SearchCgiService',method:'DoSearchForQQMusicDesktop',param:{search_type:0,query:q,page_num:page,num_per_page:searchPageSize}}}),signal:AbortSignal.timeout(15000)});
   if(!response.ok)throw Error(`QQ 音乐搜索失败：${response.status}`);
   const block=(await response.json()).req_0;
   if(block?.code!==0||block.data?.code!==0||!Array.isArray(block.data?.body?.song?.list))throw Error('QQ 音乐搜索暂不可用。');
   const songs=block.data.body.song.list.map(mapSong).filter(song=>song.id&&song.mid);
   for(const song of songs)searchedSongs.set(song.mid,{...song,at:Date.now()});
-  while(searchedSongs.size>300)searchedSongs.delete(searchedSongs.keys().next().value);
-  return {songs,total:Number(block.data.meta?.sum||songs.length)};
+  // Keep paged results playable after the user has browsed beyond the first few pages.
+  while(searchedSongs.size>30000)searchedSongs.delete(searchedSongs.keys().next().value);
+  const total=Number(block.data.meta?.sum);
+  return {songs,total:Number.isFinite(total)&&total>0?total:null,page,hasMore:hasMoreSearchResults(page,total,block.data.body.song.list.length)};
 }
 async function qqAlbumMid(id){
   const previous=albumMidCache.get(id);
@@ -282,18 +286,10 @@ async function playSong(mid,roomId){
   return {title:song.title,artist:song.artist,queueNumber:Number(number)};
 }
 const queueImports=new Map();
-const queueMutations=new Map();
 const shuffleModes=new Map();
-function withQueueMutation(target,action){
-  const previous=queueMutations.get(target)||Promise.resolve();
-  const current=previous.catch(()=>{}).then(action);
-  queueMutations.set(target,current);
-  void current.finally(()=>{if(queueMutations.get(target)===current)queueMutations.delete(target);}).catch(()=>{});
-  return current;
-}
+const withQueueMutation=createKeyedMutationQueue();
 const visibleQueueImport=job=>job&&!(job.phase==='complete'&&Date.now()-job.finishedAt>15000)?{phase:job.phase,title:job.title,selectedTitle:job.selectedTitle,added:job.added,total:job.total,error:job.error||''}:null;
-async function assertQueueIdle(roomId){
-  const {target}=await coordinator(roomId);
+function assertQueueIdle(target){
   if(['preparing','building'].includes(queueImports.get(target)?.phase))throw Error('歌单正在后台导入队列，请稍后再修改队列。');
 }
 async function enqueueDuringImport(target,song,context,position,expectedTotal){
@@ -669,7 +665,7 @@ async function control(action,value,roomId,selected){
     const modes=nextShuffle?{none:'SHUFFLE_NOREPEAT',all:'SHUFFLE',one:'SHUFFLE_REPEAT_ONE'}:{none:'NORMAL',all:'REPEAT_ALL',one:'REPEAT_ONE'};
     await transport('SetPlayMode',{NewPlayMode:modes[nextRepeat]});
     const job=queueImports.get(target);
-    if(shuffleModes.get(target)===true&&job?.phase==='building')job.originalMode=modes[nextRepeat];
+    if(job&&!job.modeRestored&&['building','complete'].includes(job.phase))job.originalMode=modes[nextRepeat];
   }else throw Error('未知控制命令。');
 }
 const send=(res,code,value)=>{res.writeHead(code,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(value));};
@@ -692,11 +688,17 @@ http.createServer(async(req,res)=>{try{
     const {target}=await coordinator(roomId);return send(res,200,{import:visibleQueueImport(queueImports.get(target))});
   }
   if(req.method==='POST'&&pathname==='/api/queue/play'){
-    await assertQueueIdle(roomId);const body=await requestBody(req);await playQueueTrack(body,roomId);return send(res,200,{ok:true});
+    const body=await requestBody(req),{target}=await coordinator(roomId);
+    await withQueueMutation(target,async()=>{assertQueueIdle(target);await playQueueTrack(body,roomId);});return send(res,200,{ok:true});
   }
-  if(req.method==='POST'&&pathname==='/api/queue/edit'){await assertQueueIdle(roomId);await editQueue(await requestBody(req),roomId);return send(res,200,{ok:true});}
+  if(req.method==='POST'&&pathname==='/api/queue/edit'){
+    const body=await requestBody(req),{target}=await coordinator(roomId);
+    await withQueueMutation(target,async()=>{assertQueueIdle(target);await editQueue(body,roomId);});return send(res,200,{ok:true});
+  }
   if(req.method==='POST'&&pathname==='/api/queue/add'){
-    await assertQueueIdle(roomId);const body=await requestBody(req);return send(res,200,{ok:true,...await addSongToQueue(String(body.mid||''),body.placement,roomId)});
+    const body=await requestBody(req),{target}=await coordinator(roomId);
+    const result=await withQueueMutation(target,async()=>{assertQueueIdle(target);return addSongToQueue(String(body.mid||''),body.placement,roomId);});
+    return send(res,200,{ok:true,...result});
   }
   if(req.method==='GET'&&pathname==='/api/sleep')return send(res,200,await sleepStatus(roomId));
   if(req.method==='POST'&&pathname==='/api/sleep')return send(res,200,await setSleepTimer(await requestBody(req),roomId));
@@ -732,7 +734,7 @@ http.createServer(async(req,res)=>{try{
   if(req.method==='POST'&&pathname==='/api/qq/session/select'){
     const body=await requestBody(req);await selectSession(String(body.id||''));cached=null;playlistCatalog=null;selectedPlaylistId=selectedPlaylist();return send(res,200,sessionState());
   }
-  if(pathname==='/api/qq/login/cookie'&&!localWrite(req))return send(res,403,{error:'请在 Mac 本机打开 localhost 导入 Cookie。'});
+  if(pathname==='/api/qq/login/cookie'&&!localWrite(req))return send(res,403,{error:'请通过运行服务的设备上的 localhost 导入 Cookie。'});
   if(['/api/qq/login/qr','/api/qq/login/poll'].includes(pathname)&&!qrWrite(req))return send(res,403,{error:'请从同一局域网的网页打开 QQ 音乐扫码登录。'});
   if(req.method==='POST'&&pathname==='/api/qq/login/qr')return send(res,200,await beginQr());
   if(req.method==='GET'&&pathname==='/api/qq/login/poll'){const result=await pollQr();if(result.state==='connected'){cached=null;playlistCatalog=null;selectedPlaylistId=selectedPlaylist();}return send(res,200,result);}
@@ -745,7 +747,7 @@ http.createServer(async(req,res)=>{try{
     await recordPlay(historyAccount(),song);return send(res,200,{ok:true});
   }
   if(req.method==='DELETE'&&pathname==='/api/history'){await clearPlayHistory(historyAccount());return send(res,200,{ok:true});}
-  if(req.method==='GET'&&pathname==='/api/search')return send(res,200,await searchSongs(requestUrl.searchParams.get('q')));
+  if(req.method==='GET'&&pathname==='/api/search')return send(res,200,await searchSongs(requestUrl.searchParams.get('q'),requestUrl.searchParams.get('page')));
   if(req.method==='POST'&&pathname==='/api/playlists/select'){
     const body=await requestBody(req),id=String(body.id||'');
     if(!(await playlists()).some(item=>item.id===id))return send(res,400,{error:'歌单不属于当前 QQ 音乐账号。'});
@@ -754,14 +756,18 @@ http.createServer(async(req,res)=>{try{
   if(req.method==='GET'&&pathname==='/api/playlist'){const p=await playlist(new URL(req.url,`http://${req.headers.host||'localhost'}`).searchParams.has('refresh'));return send(res,200,{id:p.id,title:p.title,songs:p.songs,updatedAt:new Date(p.at).toISOString()});}
   if(req.method==='POST'&&pathname==='/api/control'){
     const b=await requestBody(req);
-    if(['play','pause','next','previous','seek','shuffle'].includes(b.action)){
+    if(['play','pause','next','previous','seek','shuffle','repeatOne','repeatAll'].includes(b.action)){
       const selected=await coordinator(roomId);
       await withQueueMutation(selected.target,()=>control(b.action,b.value,roomId,selected));
     }else await control(b.action,b.value,roomId);
     return send(res,200,{ok:true});
   }
-  if(req.method==='POST'&&pathname==='/api/play'){await assertQueueIdle(roomId);const b=await requestBody(req);return send(res,200,{ok:true,...await playSong(String(b.mid||''),roomId)});}
+  if(req.method==='POST'&&pathname==='/api/play'){
+    const b=await requestBody(req),{target}=await coordinator(roomId);
+    const result=await withQueueMutation(target,async()=>{assertQueueIdle(target);return playSong(String(b.mid||''),roomId);});
+    return send(res,200,{ok:true,...result});
+  }
   if(req.method==='POST'&&pathname==='/api/play/playlist'){const b=await requestBody(req);return send(res,200,{ok:true,...await startPlaylistPlayback(b,roomId)});}
-  const file=pathname==='/'?'index.html':pathname.slice(1);if(req.method!=='GET'||!['index.html','app.js','transport-sync.mjs','style.css','favicon.svg'].includes(file))return send(res,404,{error:'页面不存在。'});
+  const file=pathname==='/'?'index.html':pathname.slice(1);if(req.method!=='GET'||!['index.html','app.js','transport-sync.mjs','library-navigation.mjs','style.css','favicon.svg'].includes(file))return send(res,404,{error:'页面不存在。'});
   const contents=await readFile(path.join(dir,file));res.writeHead(200,{'Content-Type':{'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.mjs':'text/javascript; charset=utf-8','.svg':'image/svg+xml'}[path.extname(file)]});res.end(contents);
 }catch(e){console.error(e);send(res,500,{error:e.message||'服务出错。'});}}).listen(port,host,()=>console.log(`Sonos web http://${host}:${port}; Sonos ${ip}`));

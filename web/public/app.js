@@ -1,4 +1,5 @@
 import {assessTransport,createOperationTracker} from './transport-sync.mjs';
+import {currentPlaylistIndex,visibleCountForIndex} from './library-navigation.mjs';
 const $=id=>document.getElementById(id);
 let songs=[],visible=60,filtered=[],playlistOptions=[],currentStatus=null,toastTimer,qrTimer,localLogin=false;
 let selectedRoomId=localStorage.getItem('sonos-room-id')||'',roomData=null,chosenSong=null,chosenQueueTrack=null,queueTotal=0;
@@ -141,6 +142,7 @@ function renderStatus(s){
   if(artUrl!==(s.albumArt||'')){artUrl=s.albumArt||'';resetSongTheme();for(const id of ['album-art','mini-art','lyrics-cover','lyrics-backdrop']){const image=$(id);image.hidden=true;image.removeAttribute('src');if(artUrl)image.src=artUrl;}}
   loadLyricsFor(s);
   renderLyricsAt(positionAnchor.seconds);
+  markCurrentPlaylistSong();
   if($('queue-dialog').open)markCurrentQueueTrack();
 }
 function updateProgress(){
@@ -231,7 +233,7 @@ async function playSong(song,row){
     const result=await api(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     if(playRequest!==playRequestGeneration)return;
     if(result.import)renderQueueImport(result.import);
-    const operation=beginTransportSync(true);toast(`正在播放：${song.title}`);
+    const operation=beginTransportSync(true);
     if(!await settleTransport(true,song.id,operation)){
       if(!transportOperations.isCurrent(operation))return;
       throw Error('Sonos 未能播放这首歌。请检查音箱上的 QQ 音乐账号、会员权限或版权限制。');
@@ -262,9 +264,12 @@ async function pollQueueImport(){
   catch{ /* Sonos 暂时离线时，等待下一次可见状态刷新。 */ }
   finally{queueImportPolling=false;}
 }
-function createSongRow(song){
+function createSongRow(song,asListItem=false){
   const entry=document.createElement('div');entry.className='song-entry';
+  if(asListItem)entry.setAttribute('role','listitem');
   const row=document.createElement('button');row.type='button';row.className='song';
+  row.dataset.songId=song.id;
+  if(Number.isInteger(song.index))row.dataset.index=song.index;
   row.setAttribute('aria-label',`播放 ${song.title}，${song.artist}`);
   const number=document.createElement('span');number.className='song-index';number.textContent=song.index;
   if(/^[A-Za-z0-9]{14}$/.test(song.albumMid||'')){
@@ -293,28 +298,90 @@ function renderSongs(append=false){
     list.replaceChildren();
   }
   const fragment=document.createDocumentFragment();
-  for(const song of filtered.slice(list.childElementCount,visible))fragment.append(createSongRow(song));
+  for(const song of filtered.slice(list.childElementCount,visible))fragment.append(createSongRow(song,true));
   list.append(fragment);
   $('more').hidden=list.childElementCount>=filtered.length;
-  if($('quick-search-dialog').open)renderQuickResults();
+  markCurrentPlaylistSong();
 }
-let quickSearchRequest=0,quickSearchTimer;
+function markCurrentPlaylistSong(){
+  const index=currentPlaylistIndex(songs,currentStatus?.songId);
+  $('locate-playing').hidden=index<0||!$('history-panel').hidden;
+  if(index>=0)$('locate-playing').setAttribute('aria-label',`定位正在播放：${songs[index].title}`);
+  for(const row of $('song-list').querySelectorAll('.song')){
+    const active=index>=0&&Number(row.dataset.index)===songs[index].index;
+    row.classList.toggle('now-playing',active);
+    if(active)row.setAttribute('aria-current','true');else row.removeAttribute('aria-current');
+  }
+}
+let locateGeneration=0;
+function locatePlayingSong(){
+  const index=currentPlaylistIndex(songs,currentStatus?.songId);
+  if(index<0)return;
+  const generation=++locateGeneration;
+  $('search').value='';visible=60;renderSongs();
+  const target=visibleCountForIndex(index,songs.length);
+  const reveal=()=>{
+    if(generation!==locateGeneration)return;
+    const row=$('song-list').querySelector(`.song[data-index="${songs[index].index}"]`);
+    row?.scrollIntoView({behavior:'smooth',block:'center'});
+    $('list-state').textContent=`已定位：${songs[index].title} · 第 ${index+1} 首`;
+  };
+  const append=()=>{
+    if(generation!==locateGeneration)return;
+    if(visible<target){visible=Math.min(target,visible+240);renderSongs(true);requestAnimationFrame(append);}
+    else reveal();
+  };
+  requestAnimationFrame(append);
+}
+$('locate-playing').onclick=locatePlayingSong;
+let quickSearchRequest=0,quickSearchTimer,quickSearchPage=0,quickSearchLoading=false;
+function appendQuickResults(matches){
+  const fragment=document.createDocumentFragment();
+  for(const song of matches)fragment.append(createSongRow(song));
+  $('quick-search-results').insertBefore(fragment,$('quick-search-more'));
+}
 async function renderQuickResults(){
   const request=++quickSearchRequest;
   const query=$('quick-search').value.trim().toLocaleLowerCase();
-  let matches=[];
+  quickSearchPage=0;
+  quickSearchLoading=false;
+  $('quick-search-results').replaceChildren($('quick-search-more'));
+  $('quick-search-more').hidden=true;
+  $('quick-search-more').disabled=false;
+  $('quick-search-more').textContent='加载更多歌曲';
   if(query.length>=2){
     $('quick-search-state').textContent='正在搜索 QQ 音乐…';
-    try{const data=await api(`/api/search?q=${encodeURIComponent(query)}`);if(request!==quickSearchRequest)return;matches=data.songs;$('quick-search-state').textContent=matches.length?`找到相关歌曲，显示前 ${matches.length} 首`:'没有找到歌曲，试试其他关键词。';}
+    try{
+      const data=await api(`/api/search?q=${encodeURIComponent(query)}&page=1`);
+      if(request!==quickSearchRequest)return;
+      appendQuickResults(data.songs);
+      quickSearchPage=1;
+      $('quick-search-more').hidden=!data.hasMore;
+      $('quick-search-state').textContent=data.songs.length?`已显示 ${data.songs.length}${data.total?` / 共 ${data.total}`:''} 首`:'没有找到歌曲，试试其他关键词。';
+    }
     catch(e){if(request!==quickSearchRequest)return;$('quick-search-state').textContent=e.message;}
   }else{
     $('quick-search-state').textContent=query?'至少输入两个字再搜索。':'输入歌名、歌手或专辑，搜索 QQ 音乐全曲库。';
   }
-  const fragment=document.createDocumentFragment();
-  for(const song of matches)fragment.append(createSongRow(song));
-  $('quick-search-results').replaceChildren(fragment);
 }
-function scheduleQuickSearch(){clearTimeout(quickSearchTimer);quickSearchTimer=setTimeout(renderQuickResults,260);}
+async function loadMoreQuickResults(){
+  if(quickSearchLoading||quickSearchPage<1)return;
+  const request=quickSearchRequest,query=$('quick-search').value.trim().toLocaleLowerCase();
+  quickSearchLoading=true;
+  const button=$('quick-search-more');button.disabled=true;button.textContent='正在加载…';
+  try{
+    const data=await api(`/api/search?q=${encodeURIComponent(query)}&page=${quickSearchPage+1}`);
+    if(request!==quickSearchRequest)return;
+    appendQuickResults(data.songs);
+    quickSearchPage=data.page;
+    button.hidden=!data.hasMore;
+    const shown=$('quick-search-results').querySelectorAll('.song-entry').length;
+    $('quick-search-state').textContent=`已显示 ${shown}${data.total?` / 共 ${data.total}`:''} 首`;
+  }catch(error){if(request===quickSearchRequest)$('quick-search-state').textContent=`加载更多失败：${error.message}`;}
+  finally{if(request===quickSearchRequest){quickSearchLoading=false;button.disabled=false;button.textContent='加载更多歌曲';}}
+}
+function scheduleQuickSearch(){quickSearchRequest++;clearTimeout(quickSearchTimer);quickSearchTimer=setTimeout(renderQuickResults,260);}
+$('quick-search-more').onclick=loadMoreQuickResults;
 const moreObserver=new IntersectionObserver(([entry])=>{
   if(entry.isIntersecting&&!$('more').hidden&&visible<filtered.length){
     visible=Math.min(visible+60,filtered.length);renderSongs(true);
@@ -322,25 +389,36 @@ const moreObserver=new IntersectionObserver(([entry])=>{
 },{rootMargin:'400px 0px'});
 moreObserver.observe($('more'));
 
-async function loadPlaylist(refresh=false){$('refresh').disabled=true;$('list-state').textContent=refresh?'正在刷新歌单…':'正在加载歌单…';try{const data=await api(`/api/playlist${refresh?'?refresh=1':''}`);songs=data.songs;$('playlist-title').textContent=data.title;$('song-count').textContent=`${songs.length} 首`;visible=60;renderSongs();$('account-state').hidden=true;if(refresh)toast(`已刷新 ${songs.length} 首歌曲`);}catch(e){songs=[];$('song-list').replaceChildren();$('list-state').textContent=e.message;$('account-state').textContent=`${e.message} 可在“QQ 账号”中重新登录。`;$('account-state').hidden=false;toast(e.message);}finally{$('refresh').disabled=false;}}
+async function loadPlaylist(refresh=false){locateGeneration++;$('refresh').disabled=true;$('list-state').textContent=refresh?'正在刷新歌单…':'正在加载歌单…';try{const data=await api(`/api/playlist${refresh?'?refresh=1':''}`);songs=data.songs;$('playlist-title').textContent=data.title;$('song-count').textContent=`${songs.length} 首`;visible=60;renderSongs();$('account-state').hidden=true;}catch(e){songs=[];$('song-list').replaceChildren();markCurrentPlaylistSong();$('list-state').textContent=e.message;$('account-state').textContent=`${e.message} 可在“QQ 账号”中重新登录。`;$('account-state').hidden=false;toast(e.message);}finally{$('refresh').disabled=false;}}
 async function loadHistory(){
   $('history-state').textContent='正在读取本地记录…';
   try{
     const {songs:recent}=await api('/api/history');
-    $('history-list').replaceChildren(...recent.map(createSongRow));
+    $('history-list').replaceChildren(...recent.map(song=>createSongRow(song,true)));
     $('history-state').textContent=recent.length?`最近点播 ${recent.length} 首 · 每个账号最多保留 100 首`:'还没有记录。从歌单或全曲库选择一首歌开始播放。';
     $('history-clear').hidden=!recent.length;
   }catch(error){$('history-state').textContent=error.message;}
 }
 function showLibraryView(view){
+  locateGeneration++;
   const history=view==='history';
   $('playlist-panel').hidden=history;$('history-panel').hidden=!history;
   $('playlist-tab').setAttribute('aria-selected',String(!history));
   $('history-tab').setAttribute('aria-selected',String(history));
+  $('playlist-tab').tabIndex=history?-1:0;
+  $('history-tab').tabIndex=history?0:-1;
+  markCurrentPlaylistSong();
   if(history)void loadHistory();
 }
 $('playlist-tab').onclick=()=>showLibraryView('playlist');
 $('history-tab').onclick=()=>showLibraryView('history');
+for(const tab of [$('playlist-tab'),$('history-tab')])tab.onkeydown=event=>{
+  if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;
+  event.preventDefault();
+  const next=event.key==='ArrowRight'||event.key==='End'?'history':'playlist';
+  showLibraryView(next);
+  $(next==='history'?'history-tab':'playlist-tab').focus();
+};
 $('history-clear').onclick=async()=>{
   if(!confirm('清空这个 QQ 账号在本网页的最近播放记录？'))return;
   try{await api('/api/history',{method:'DELETE'});await loadHistory();}catch(error){toast(error.message);}
@@ -658,7 +736,7 @@ bindMobileSwipe($('mini-player'),'up',()=>setMobilePlayer(true));
 window.addEventListener('scroll',updateMiniVisibility,{passive:true});window.addEventListener('resize',updateMiniVisibility);
 $('login-dialog').addEventListener('close',updateMiniVisibility);
 updateMiniVisibility();
-$('search').oninput=()=>{visible=60;renderSongs();};$('refresh').onclick=async()=>{try{await loadCatalog(true);await loadPlaylist(true);}catch(e){toast(e.message);}};
+$('search').oninput=()=>{locateGeneration++;visible=60;renderSongs();};$('refresh').onclick=async()=>{try{await loadCatalog(true);await loadPlaylist(true);}catch(e){toast(e.message);}};
 $('qq-account').onchange=async e=>{const selector=e.currentTarget;selector.disabled=true;try{await api('/api/qq/session/select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:selector.value})});await checkSession();await loadCatalog(true);await loadPlaylist(true);if(!$('history-panel').hidden)await loadHistory();$('account-dialog').close();}catch(error){toast(error.message);await checkSession();}finally{selector.disabled=false;}};
 function openCatalogSearch(event){$('quick-search').value='';showDialog('quick-search-dialog',event);renderQuickResults();updateMiniVisibility();$('quick-search').focus({preventScroll:true});}
 $('quick-search-open').onclick=openCatalogSearch;
@@ -706,7 +784,7 @@ async function loadQueue(start=0,focusCurrent=false){
       info.append(title,artist);row.append(number,art,info);
       const more=document.createElement('button');more.type='button';more.className='queue-more-trigger';more.setAttribute('aria-label',`${track.title}的队列操作`);more.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>';
       more.onclick=e=>{chosenQueueTrack=track;$('queue-action-name').textContent=`${track.number}. ${track.title} · ${track.artist}`;$('queue-move-up').disabled=track.number<=1;$('queue-move-down').disabled=track.number>=queueTotal;showDialog('queue-action-dialog',e);updateMiniVisibility();};
-      row.onclick=async()=>{const playRequest=++playRequestGeneration;row.blur();row.disabled=true;let operation=null;try{await api('/api/queue/play',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({number:track.number,key:track.key})});if(playRequest!==playRequestGeneration)return;operation=beginTransportSync(true);await settleTransport(true,0,operation);if(!transportOperations.isCurrent(operation))return;markCurrentQueueTrack();toast(`正在播放：${track.title}`);}catch(e){if(playRequest===playRequestGeneration&&(!operation||transportOperations.isCurrent(operation))){expectedPlaying=null;transportExpectation=null;transportSettlingUntil=0;await updateStatus();toast(e.message);}}finally{row.disabled=false;}};
+      row.onclick=async()=>{const playRequest=++playRequestGeneration;row.blur();row.disabled=true;let operation=null;try{await api('/api/queue/play',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({number:track.number,key:track.key})});if(playRequest!==playRequestGeneration)return;operation=beginTransportSync(true);await settleTransport(true,0,operation);if(!transportOperations.isCurrent(operation))return;markCurrentQueueTrack();}catch(e){if(playRequest===playRequestGeneration&&(!operation||transportOperations.isCurrent(operation))){expectedPlaying=null;transportExpectation=null;transportSettlingUntil=0;await updateStatus();toast(e.message);}}finally{row.disabled=false;}};
       entry.append(row,more);fragment.append(entry);
     }
     $('queue-list').replaceChildren(fragment);queueStart=start;queueTotal=data.total;
@@ -733,7 +811,7 @@ $('queue-action-dialog').addEventListener('close',updateMiniVisibility);
 async function editChosenQueue(action,before){
   const track=chosenQueueTrack;if(!track)return;
   const buttons=$('queue-action-dialog').querySelectorAll('button');for(const button of buttons)button.disabled=true;
-  try{await api('/api/queue/edit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,number:track.number,key:track.key,before})});$('queue-action-dialog').close();await loadQueue(queueStart);await updateStatus();toast(action==='remove'?'已移出队列':'已调整队列顺序');}
+  try{await api('/api/queue/edit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,number:track.number,key:track.key,before})});$('queue-action-dialog').close();await loadQueue(queueStart);await updateStatus();}
   catch(e){toast(e.message);}finally{for(const button of buttons)button.disabled=false;}
 }
 $('queue-move-up').onclick=()=>editChosenQueue('move',chosenQueueTrack.number-1);
@@ -776,7 +854,7 @@ async function loadRooms(){
   }catch(e){$('rooms-state').textContent=e.message;toast(e.message);}
 }
 async function changeGroup(input){
-  try{await api('/api/rooms/group',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(input)});await loadRooms();await updateStatus();toast('房间分组已更新');}
+  try{await api('/api/rooms/group',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(input)});await loadRooms();await updateStatus();}
   catch(e){toast(e.message);}
 }
 $('rooms-open').onclick=e=>{$('utilities-dialog').close();showDialog('rooms-dialog',e);updateMiniVisibility();loadRooms();};
@@ -806,7 +884,7 @@ async function loadSleep(){
 }
 async function setSleep(input){
   const buttons=$('sleep-dialog').querySelectorAll('button');for(const button of buttons)button.disabled=true;
-  try{const data=await api('/api/sleep',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(input)});sleepEndsAt=data.endsAt?Date.parse(data.endsAt):null;renderSleep();toast(input.mode==='cancel'?'已取消睡眠定时':'睡眠定时已设置');}
+  try{const data=await api('/api/sleep',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(input)});sleepEndsAt=data.endsAt?Date.parse(data.endsAt):null;renderSleep();}
   catch(e){toast(e.message);}
   finally{for(const button of buttons)button.disabled=false;}
 }
