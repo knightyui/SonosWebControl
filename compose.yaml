@@ -3,7 +3,7 @@ services:
     build: .
     network_mode: host
     environment:
-      SONOS_IP: ${SONOS_IP:?Set SONOS_IP to the speaker's LAN address}
+      SONOS_IP: ${SONOS_IP:-}
       PORT: ${PORT:-38473}
       HOST: 0.0.0.0
       SONOS_DATA_DIR: /data

@@ -7,25 +7,33 @@ import {beginQr,loadSession,pollQr,saveSelectedPlaylist,saveSession,selectSessio
 import {clearPlayHistory,loadPlayHistory,recentPlays,recordPlay} from './play-history.mjs';
 import {assertQueueTrack,createKeyedMutationQueue,matchPlaylistQueue,remainingPlaylistIndices,replaceQueueSafely,replaceQueueTailSafely,requiresQueueRecheck,shuffledIndices,withoutSonosShuffle} from './queue-safety.mjs';
 import {hasMoreSearchResults,parseSearchPage,searchPageSize} from './search-pagination.mjs';
+import {createSonosLocator} from './sonos-discovery.mjs';
 
-const ip=process.env.SONOS_IP;
-if(!ip)throw Error('请设置 SONOS_IP，例如 SONOS_IP=192.168.x.x npm start。');
+const locator=createSonosLocator({seedIp:process.env.SONOS_IP||''});
 const host=process.env.HOST||'0.0.0.0', port=Number(process.env.PORT||38473);
-const base=`http://${ip}:1400`, dir=path.join(path.dirname(fileURLToPath(import.meta.url)),'public');
+const dir=path.join(path.dirname(fileURLToPath(import.meta.url)),'public');
 const routes={AVTransport:'/MediaRenderer/AVTransport/Control',RenderingControl:'/MediaRenderer/RenderingControl/Control',GroupRenderingControl:'/MediaRenderer/GroupRenderingControl/Control',ContentDirectory:'/MediaServer/ContentDirectory/Control',ZoneGroupTopology:'/ZoneGroupTopology/Control'};
 const enc=s=>String(s??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&apos;');
 const dec=s=>String(s??'').replace(/&#(x[0-9a-f]+|\d+);|&(amp|lt|gt|quot|apos);/gi,(_,n,v)=>n?String.fromCodePoint(n[0].toLowerCase()==='x'?parseInt(n.slice(1),16):Number(n)):({amp:'&',lt:'<',gt:'>',quot:'"',apos:"'"})[v.toLowerCase()]);
 const tag=(xml,name)=>dec(new RegExp(`<(?:(?:[\\w-]+):)?${name}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/(?:(?:[\\w-]+):)?${name}>`,'i').exec(xml)?.[1]||'');
 const attr=(xml,name)=>dec(new RegExp(`\\b${name}="([^"]*)"`,'i').exec(xml)?.[1]||'');
-async function soap(service,action,args={},target=base){
+async function soap(service,action,args={},target){
+  target??=(await locator.resolve()).origin;
   const urn=`urn:schemas-upnp-org:service:${service}:1`;
   const data=`<?xml version="1.0" encoding="utf-8"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:${action} xmlns:u="${urn}">${Object.entries(args).map(([k,v])=>`<${k}>${enc(v)}</${k}>`).join('')}</u:${action}></s:Body></s:Envelope>`;
   const r=await fetch(target+routes[service],{method:'POST',headers:{'Content-Type':'text/xml; charset="utf-8"',SOAPACTION:`"${urn}#${action}"`},body:data,signal:AbortSignal.timeout(10000)});
   const x=await r.text(); if(!r.ok||x.includes('<s:Fault>'))throw Error(`${action} 失败：${tag(x,'errorDescription')||r.status}`); return x;
 }
-async function topology(){
-  const description=await (await fetch(base+'/xml/device_description.xml',{signal:AbortSignal.timeout(5000)})).text();
-  const udn=tag(description,'UDN').replace(/^uuid:/i,''), state=tag(await soap('ZoneGroupTopology','GetZoneGroupState'),'ZoneGroupState');
+async function topology(refresh=false){
+  const device=await locator.resolve(refresh);
+  try{return await topologyFor(device);}catch(error){
+    locator.invalidate(device.origin);
+    if(refresh)throw error;
+    return topologyFor(await locator.resolve(true));
+  }
+}
+async function topologyFor({origin,description}){
+  const udn=tag(description,'UDN').replace(/^uuid:/i,''), state=tag(await soap('ZoneGroupTopology','GetZoneGroupState',{},origin),'ZoneGroupState');
   const rooms=[];
   for(const match of state.matchAll(/<ZoneGroup\b[^>]*>[^]*?<\/ZoneGroup>/g)){
     const group=match[0],groupId=attr(group,'ID'),coordinatorId=attr(group,'Coordinator');
@@ -35,8 +43,9 @@ async function topology(){
       rooms.push({id,name:attr(member,'ZoneName')||'Sonos',groupId,coordinatorId,device:new URL(location).origin});
     }
   }
-  if(!rooms.some(room=>room.id===udn))throw Error('找不到当前 Sonos 房间。');
-  return {rooms,defaultId:udn,defaultModel:tag(description,'modelName')||'Sonos'};
+  if(!rooms.length)throw Error('找不到当前 Sonos 房间。');
+  const visiblePrimary=rooms.some(room=>room.id===udn);
+  return {rooms,defaultId:visiblePrimary?udn:rooms[0].id,defaultModel:visiblePrimary?(tag(description,'modelName')||'Sonos'):'Sonos'};
 }
 async function coordinator(roomId){
   const state=await topology(),selected=state.rooms.find(room=>room.id===(roomId||state.defaultId));
@@ -45,7 +54,7 @@ async function coordinator(roomId){
   if(!leader)throw Error('找不到 Sonos 分组的主音箱。');
   return {target:leader.device,device:selected.device,room:selected.name,roomId:selected.id,groupId:selected.groupId,coordinatorId:leader.id,groupSize:state.rooms.filter(room=>room.groupId===selected.groupId).length,model:selected.id===state.defaultId?state.defaultModel:'Sonos',rooms:state.rooms};
 }
-async function browse(id,start=0,count=200,target=base){
+async function browse(id,start=0,count=200,target){
   const x=await soap('ContentDirectory','Browse',{ObjectID:id,BrowseFlag:'BrowseDirectChildren',Filter:'*',StartingIndex:start,RequestedCount:count,SortCriteria:''},target);
   return {xml:tag(x,'Result'),total:Number(tag(x,'TotalMatches')),updateId:tag(x,'UpdateID')};
 }
@@ -58,6 +67,7 @@ const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 let cached;
 let selectedPlaylistId='liked';
 let playlistCatalog;
+const catalogLoads=new Map(),playlistLoads=new Map();
 const lyricsCache=new Map();
 const albumMidCache=new Map();
 const searchedSongs=new Map();
@@ -82,7 +92,14 @@ async function playlistPage(id,start,count){
   return result.data;
 }
 async function playlists(refresh=false){
-  if(playlistCatalog&&!refresh&&Date.now()-playlistCatalog.at<1800000)return playlistCatalog.list;
+  const account=historyAccount();
+  if(playlistCatalog?.account===account&&!refresh&&Date.now()-playlistCatalog.at<1800000)return playlistCatalog.list;
+  if(catalogLoads.has(account))return catalogLoads.get(account);
+  const pending=fetchPlaylists(account);
+  catalogLoads.set(account,pending);
+  try{return await pending;}finally{if(catalogLoads.get(account)===pending)catalogLoads.delete(account);}
+}
+async function fetchPlaylists(account){
   if(!sessionCookie())throw Error('请先在网页中登录 QQ 音乐。');
   const [liked,createdList,collectedList]=await Promise.all([
     playlistPage('liked',0,1),
@@ -93,18 +110,28 @@ async function playlists(refresh=false){
   const seen=new Set(['liked']);
   for(const item of createdList){const id=String(item.tid||'');if(!/^\d+$/.test(id)||seen.has(id))continue;seen.add(id);list.push({id,title:item.diss_name||'未命名歌单',count:Number(item.song_cnt||0),source:'created'});}
   for(const item of collectedList){const id=String(item.dissid||'');if(!/^\d+$/.test(id)||seen.has(id))continue;seen.add(id);list.push({id,title:item.dissname||'未命名歌单',count:Number(item.songnum||0),source:'collected'});}
+  if(account!==historyAccount())throw Error('QQ 账号已切换，请重试。');
   if(!list.some(item=>item.id===selectedPlaylistId)){selectedPlaylistId='liked';await saveSelectedPlaylist('liked');}
-  playlistCatalog={list,at:Date.now()};return list;
+  playlistCatalog={account,list,at:Date.now()};return list;
 }
 const mapSong=(s,i)=>({index:i+1,id:Number(s.songid||s.id),mid:String(s.songmid||s.mid||''),title:s.title||s.songname||s.name||'',artist:(s.singer||[]).map(a=>a.name).join('、'),album:s.albumname||s.album?.name||'',albumMid:String(s.albummid||s.album?.mid||''),duration:Number(s.interval||0)});
 async function playlist(refresh=false){
-  if(cached&&cached.id===selectedPlaylistId&&!refresh&&Date.now()-cached.at<1800000)return cached;
-  const catalog=await playlists(refresh),entry=catalog.find(x=>x.id===selectedPlaylistId);
+  const key=`${historyAccount()}:${selectedPlaylistId}`;
+  if(playlistLoads.has(key))return playlistLoads.get(key);
+  const pending=fetchPlaylist(refresh);
+  playlistLoads.set(key,pending);
+  try{return await pending;}finally{if(playlistLoads.get(key)===pending)playlistLoads.delete(key);}
+}
+async function fetchPlaylist(refresh=false){
+  const account=historyAccount(),id=selectedPlaylistId;
+  if(cached&&cached.account===account&&cached.id===id&&!refresh&&Date.now()-cached.at<1800000)return cached;
+  const catalog=await playlists(refresh),entry=catalog.find(x=>x.id===id);
   if(!entry)throw Error('当前歌单不属于所选 QQ 音乐账号，请重新选择。');
   const first=await playlistPage(entry.id,0,200),total=Number(first.total_song_num||0),all=[...first.songlist];
   for(let start=all.length;start<total&&start<10000;start+=200){const page=await playlistPage(entry.id,start,200);if(!page.songlist.length)break;all.push(...page.songlist);}
   const songs=all.map(mapSong).filter(s=>s.id&&s.mid);
-  cached={id:entry.id,title:entry.title,songs,at:Date.now()};return cached;
+  if(account!==historyAccount()||id!==selectedPlaylistId)throw Error('歌单已切换，请重试。');
+  cached={account,id:entry.id,title:entry.title,songs,at:Date.now()};return cached;
 }
 async function searchSongs(query,pageInput){
   const q=String(query||'').trim();if(q.length<2||q.length>80)throw Error('请输入 2 到 80 个字搜索歌曲。');
@@ -564,8 +591,8 @@ async function setSleepTimer(input,roomId){
   await soap('AVTransport','ConfigureSleepTimer',{InstanceID:0,NewSleepTimerDuration:value},target);
   return sleepStatus(roomId);
 }
-async function roomList(){
-  const state=await topology();
+async function roomList(refresh=false){
+  const state=await topology(refresh);
   const rooms=await Promise.all(state.rooms.map(async room=>{
     let volume=null;
     try{volume=Number(tag(await soap('RenderingControl','GetVolume',{InstanceID:0,Channel:'Master'},room.device),'CurrentVolume'));}catch{}
@@ -616,7 +643,7 @@ async function status(roomId){
       }
     }
   }
-  return {room,roomId:selectedRoomId,groupSize,model,ip,playing:tag(transport,'CurrentTransportState')==='PLAYING',state:tag(transport,'CurrentTransportState'),volume:Number(tag(volume,'CurrentVolume')),groupVolume:groupSize>1?Number(tag(groupVolume,'CurrentVolume')):null,mute:tag(mute,'CurrentMute')==='1',shuffle:shuffleModes.get(target)===true||mode.startsWith('SHUFFLE'),repeatOne:['REPEAT_ONE','SHUFFLE_REPEAT_ONE'].includes(mode),repeatAll:['REPEAT_ALL','SHUFFLE'].includes(mode),crossfade:tag(crossfade,'CrossfadeMode')==='1',playMode:mode,title,artist,album,albumArt,songId,track:Number(tag(position,'Track')),position:tag(position,'RelTime'),duration};
+  return {room,roomId:selectedRoomId,groupSize,model,ip:new URL(device).hostname,playing:tag(transport,'CurrentTransportState')==='PLAYING',state:tag(transport,'CurrentTransportState'),volume:Number(tag(volume,'CurrentVolume')),groupVolume:groupSize>1?Number(tag(groupVolume,'CurrentVolume')):null,mute:tag(mute,'CurrentMute')==='1',shuffle:shuffleModes.get(target)===true||mode.startsWith('SHUFFLE'),repeatOne:['REPEAT_ONE','SHUFFLE_REPEAT_ONE'].includes(mode),repeatAll:['REPEAT_ALL','SHUFFLE'].includes(mode),crossfade:tag(crossfade,'CrossfadeMode')==='1',playMode:mode,title,artist,album,albumArt,songId,track:Number(tag(position,'Track')),position:tag(position,'RelTime'),duration};
 }
 async function control(action,value,roomId,selected){
   const {target,device,groupSize}=selected||await coordinator(roomId), transport=(name,args={})=>soap('AVTransport',name,{InstanceID:0,...args},target);
@@ -677,7 +704,7 @@ const qrWrite=req=>{if(!isLan(req))return false;const host=req.headers.host;if(!
 http.createServer(async(req,res)=>{try{
   const requestUrl=new URL(req.url,`http://${req.headers.host||'localhost'}`),pathname=requestUrl.pathname,roomId=requestUrl.searchParams.get('room')||undefined;
   if(req.method==='GET'&&pathname==='/api/status')return send(res,200,await status(roomId));
-  if(req.method==='GET'&&pathname==='/api/rooms')return send(res,200,await roomList());
+  if(req.method==='GET'&&pathname==='/api/rooms')return send(res,200,await roomList(requestUrl.searchParams.has('refresh')));
   if(req.method==='POST'&&pathname==='/api/rooms/group'){await setGroup(await requestBody(req));return send(res,200,await roomList());}
   if(req.method==='GET'&&pathname==='/api/queue'){
     const start=Number(requestUrl.searchParams.get('start')||0);
@@ -730,7 +757,7 @@ http.createServer(async(req,res)=>{try{
     if(data.length>5_000_000)throw Error('专辑封面文件过大。');
     res.writeHead(200,{'Content-Type':type,'Cache-Control':'private, max-age=3600'});res.end(data);return;
   }
-  if(req.method==='GET'&&pathname==='/api/qq/session')return send(res,200,{...sessionState(),local:isLocal(req),canQrLogin:isLan(req)});
+  if(req.method==='GET'&&pathname==='/api/qq/session')return send(res,200,{...sessionState(),selectedId:selectedPlaylistId,local:isLocal(req),canQrLogin:isLan(req)});
   if(req.method==='POST'&&pathname==='/api/qq/session/select'){
     const body=await requestBody(req);await selectSession(String(body.id||''));cached=null;playlistCatalog=null;selectedPlaylistId=selectedPlaylist();return send(res,200,sessionState());
   }
@@ -753,7 +780,7 @@ http.createServer(async(req,res)=>{try{
     if(!(await playlists()).some(item=>item.id===id))return send(res,400,{error:'歌单不属于当前 QQ 音乐账号。'});
     await saveSelectedPlaylist(id);selectedPlaylistId=id;cached=null;return send(res,200,{selectedId:id});
   }
-  if(req.method==='GET'&&pathname==='/api/playlist'){const p=await playlist(new URL(req.url,`http://${req.headers.host||'localhost'}`).searchParams.has('refresh'));return send(res,200,{id:p.id,title:p.title,songs:p.songs,updatedAt:new Date(p.at).toISOString()});}
+  if(req.method==='GET'&&pathname==='/api/playlist'){const p=await playlist(new URL(req.url,`http://${req.headers.host||'localhost'}`).searchParams.has('refresh'));return send(res,200,{account:p.account,id:p.id,title:p.title,songs:p.songs,updatedAt:new Date(p.at).toISOString()});}
   if(req.method==='POST'&&pathname==='/api/control'){
     const b=await requestBody(req);
     if(['play','pause','next','previous','seek','shuffle','repeatOne','repeatAll'].includes(b.action)){
@@ -768,6 +795,6 @@ http.createServer(async(req,res)=>{try{
     return send(res,200,{ok:true,...result});
   }
   if(req.method==='POST'&&pathname==='/api/play/playlist'){const b=await requestBody(req);return send(res,200,{ok:true,...await startPlaylistPlayback(b,roomId)});}
-  const file=pathname==='/'?'index.html':pathname.slice(1);if(req.method!=='GET'||!['index.html','app.js','transport-sync.mjs','library-navigation.mjs','style.css','favicon.svg'].includes(file))return send(res,404,{error:'页面不存在。'});
+  const file=pathname==='/'?'index.html':pathname.slice(1);if(req.method!=='GET'||!['index.html','app.js','transport-sync.mjs','library-navigation.mjs','playlist-cache.mjs','style.css','favicon.svg'].includes(file))return send(res,404,{error:'页面不存在。'});
   const contents=await readFile(path.join(dir,file));res.writeHead(200,{'Content-Type':{'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.mjs':'text/javascript; charset=utf-8','.svg':'image/svg+xml'}[path.extname(file)]});res.end(contents);
-}catch(e){console.error(e);send(res,500,{error:e.message||'服务出错。'});}}).listen(port,host,()=>console.log(`Sonos web http://${host}:${port}; Sonos ${ip}`));
+}catch(e){console.error(e);send(res,500,{error:e.message||'服务出错。'});}}).listen(port,host,()=>console.log(`Sonos web http://${host}:${port}; Sonos ${process.env.SONOS_IP||'自动发现'}`));

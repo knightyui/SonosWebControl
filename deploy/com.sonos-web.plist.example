@@ -5,7 +5,6 @@
   <key>ProgramArguments</key><array><string>{{NODE_BIN}}</string><string>{{PROJECT_DIR}}/web/server.mjs</string></array>
   <key>WorkingDirectory</key><string>{{PROJECT_DIR}}/web</string>
   <key>EnvironmentVariables</key><dict>
-    <key>SONOS_IP</key><string>{{SONOS_IP}}</string>
     <key>PORT</key><string>38473</string>
   </dict>
   <key>RunAtLoad</key><true/>

@@ -1,8 +1,11 @@
 import {assessTransport,createOperationTracker} from './transport-sync.mjs';
 import {currentPlaylistIndex,visibleCountForIndex} from './library-navigation.mjs';
+import {createPlaylistCache} from './playlist-cache.mjs';
 const $=id=>document.getElementById(id);
 let songs=[],visible=60,filtered=[],playlistOptions=[],currentStatus=null,toastTimer,qrTimer,localLogin=false;
 let selectedRoomId=localStorage.getItem('sonos-room-id')||'',roomData=null,chosenSong=null,chosenQueueTrack=null,queueTotal=0;
+const playlistCache=createPlaylistCache({getItem:key=>localStorage.getItem(key),setItem:(key,value)=>localStorage.setItem(key,value),removeItem:key=>localStorage.removeItem(key)});
+let libraryAccount='',libraryPlaylistId='',libraryReady=false,playlistRequest=0,displayedPlaylistId='';
 let seeking=false,volumeDragging=false,volumeDesired=null,volumeSending=false,artUrl='';
 let lyrics=[],lyricTrack='',lyricMessage='正在读取歌词…',activeLyricIndex=-2;
 let positionAnchor={seconds:0,at:Date.now(),playing:false};
@@ -298,7 +301,11 @@ function renderSongs(append=false){
     list.replaceChildren();
   }
   const fragment=document.createDocumentFragment();
-  for(const song of filtered.slice(list.childElementCount,visible))fragment.append(createSongRow(song,true));
+  for(const song of filtered.slice(list.childElementCount,visible)){
+    const entry=createSongRow(song,true);
+    if(!libraryReady)for(const button of entry.querySelectorAll('button')){button.disabled=true;button.dataset.libraryPending='true';}
+    fragment.append(entry);
+  }
   list.append(fragment);
   $('more').hidden=list.childElementCount>=filtered.length;
   markCurrentPlaylistSong();
@@ -389,7 +396,53 @@ const moreObserver=new IntersectionObserver(([entry])=>{
 },{rootMargin:'400px 0px'});
 moreObserver.observe($('more'));
 
-async function loadPlaylist(refresh=false){locateGeneration++;$('refresh').disabled=true;$('list-state').textContent=refresh?'正在刷新歌单…':'正在加载歌单…';try{const data=await api(`/api/playlist${refresh?'?refresh=1':''}`);songs=data.songs;$('playlist-title').textContent=data.title;$('song-count').textContent=`${songs.length} 首`;visible=60;renderSongs();$('account-state').hidden=true;}catch(e){songs=[];$('song-list').replaceChildren();markCurrentPlaylistSong();$('list-state').textContent=e.message;$('account-state').textContent=`${e.message} 可在“QQ 账号”中重新登录。`;$('account-state').hidden=false;toast(e.message);}finally{$('refresh').disabled=false;}}
+function displayPlaylist(data){
+  const same=displayedPlaylistId===data.id&&JSON.stringify(songs)===JSON.stringify(data.songs);
+  displayedPlaylistId=data.id;songs=data.songs;
+  $('playlist-title').textContent=data.title;$('song-count').textContent=`${songs.length} 首`;
+  const selector=$('qq-playlist');
+  if(![...selector.options].some(option=>option.value===data.id))selector.add(new Option(data.title,data.id));
+  selector.value=data.id;
+  if(!same){locateGeneration++;visible=60;renderSongs();}
+  else updateCachedRowAvailability();
+}
+function updateCachedRowAvailability(){
+  if(!libraryReady)return;
+  for(const button of $('song-list').querySelectorAll('button[data-library-pending]')){button.disabled=false;delete button.dataset.libraryPending;}
+}
+function setLibraryContext(account,id){
+  const accountChanged=libraryAccount!==account;
+  const changed=libraryAccount!==account||libraryPlaylistId!==id;
+  libraryAccount=account;libraryPlaylistId=id;libraryReady=Boolean(account&&id);
+  $('playlist-open').disabled=!libraryReady;
+  if(changed){
+    playlistRequest++;songs=[];displayedPlaylistId='';visible=60;$('search').value='';renderSongs();
+    $('account-state').hidden=true;
+    $('playlist-title').textContent=libraryReady?'正在加载歌单…':'请登录 QQ 音乐';$('song-count').textContent='';
+  }
+  if(accountChanged){playlistOptions=[];$('qq-playlist').replaceChildren();renderPlaylistChoices();}
+  const saved=playlistCache.read(account,id);
+  if(saved)displayPlaylist(saved.data);
+  else if(!changed)updateCachedRowAvailability();
+}
+async function loadPlaylist(refresh=false){
+  const request=++playlistRequest,account=libraryAccount,id=libraryPlaylistId;
+  $('refresh').disabled=true;
+  const hasSnapshot=displayedPlaylistId===id;
+  if(!hasSnapshot)$('list-state').textContent='正在加载歌单…';
+  try{
+    const data=await api(`/api/playlist${refresh?'?refresh=1':''}`);
+    if(request!==playlistRequest||account!==libraryAccount||id!==libraryPlaylistId)return;
+    if(data.account!==account||data.id!==id)throw Error('歌单已切换，请重新打开网页。');
+    displayPlaylist(data);playlistCache.write(account,data);$('account-state').hidden=true;
+  }catch(e){
+    if(request!==playlistRequest)return;
+    if(!hasSnapshot){songs=[];$('song-list').replaceChildren();markCurrentPlaylistSong();$('list-state').textContent=e.message;}
+    $('account-state').textContent=hasSnapshot?`更新失败，继续显示上次保存的歌单。${e.message}`:`${e.message} 可在“QQ 账号”中重新登录。`;
+    $('account-state').hidden=false;
+    if(refresh||!hasSnapshot)toast(e.message);
+  }finally{if(request===playlistRequest)$('refresh').disabled=false;}
+}
 async function loadHistory(){
   $('history-state').textContent='正在读取本地记录…';
   try{
@@ -424,11 +477,14 @@ $('history-clear').onclick=async()=>{
   try{await api('/api/history',{method:'DELETE'});await loadHistory();}catch(error){toast(error.message);}
 };
 async function loadCatalog(refresh=false){
+  const account=libraryAccount,id=libraryPlaylistId;
   const data=await api(`/api/playlists${refresh?'?refresh=1':''}`);
+  if(account!==libraryAccount||id!==libraryPlaylistId)return;
   playlistOptions=data.playlists;
   const selector=$('qq-playlist');selector.replaceChildren();
   for(const item of data.playlists){const option=new Option(`${item.title} · ${item.count} 首`,item.id);selector.add(option);}
-  selector.value=data.selectedId;
+  if(data.selectedId!==libraryPlaylistId){setLibraryContext(account,data.selectedId);void loadPlaylist();}
+  selector.value=libraryPlaylistId;
   renderPlaylistChoices();
   return data;
 }
@@ -453,11 +509,11 @@ async function selectPlaylist(id,button){
   if(id===$('qq-playlist').value){$('playlist-dialog').close();return;}
   for(const choice of $('playlist-list').querySelectorAll('button'))choice.disabled=true;
   button.querySelector('.playlist-choice-marker').textContent='…';
-  try{await api('/api/playlists/select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});$('qq-playlist').value=id;await loadPlaylist();$('playlist-dialog').close();}
+  try{await api('/api/playlists/select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});setLibraryContext(libraryAccount,id);await loadPlaylist();$('playlist-dialog').close();}
   catch(error){toast(error.message);await loadCatalog();}
   finally{renderPlaylistChoices();}
 }
-async function checkSession(){try{const state=await api('/api/qq/session');localLogin=state.local;$('login').hidden=!state.canQrLogin;$('cookie-import').hidden=!state.local;$('login').textContent=state.connected?'添加或重新登录账号':'登录 QQ 音乐';$('login-help').textContent=state.local?'请用 QQ 扫码并确认。成功后歌单会自动刷新。':'请用另一台设备扫描二维码，或在 QQ 中识别二维码并确认。成功后歌单会自动刷新。';const accounts=state.accounts||[];const selector=$('qq-account');selector.replaceChildren();for(const account of accounts){const option=new Option(`QQ 账号 · 尾号 ${account.id.slice(-4)}`,account.id);selector.add(option);}selector.value=state.active||'';selector.disabled=accounts.length<2;$('account-count-hint').textContent=accounts.length===0?'尚未保存 QQ 音乐账号，请先登录。':accounts.length===1?'目前只保存了 1 个账号。先添加另一个账号，才能切换。':'选择账号后会自动刷新歌单。';$('account-label').textContent=state.active?`账号 · ${state.active.slice(-4)}`:'QQ 账号';}catch(e){toast(e.message);}}
+async function checkSession(){try{const state=await api('/api/qq/session');setLibraryContext(state.active||'',state.selectedId||'');if(!state.connected)playlistCache.clear();localLogin=state.local;$('login').hidden=!state.canQrLogin;$('cookie-import').hidden=!state.local;$('login').textContent=state.connected?'添加或重新登录账号':'登录 QQ 音乐';$('login-help').textContent=state.local?'请用 QQ 扫码并确认。成功后歌单会自动刷新。':'请用另一台设备扫描二维码，或在 QQ 中识别二维码并确认。成功后歌单会自动刷新。';const accounts=state.accounts||[];const selector=$('qq-account');selector.replaceChildren();for(const account of accounts){const option=new Option(`QQ 账号 · 尾号 ${account.id.slice(-4)}`,account.id);selector.add(option);}selector.value=state.active||'';selector.disabled=accounts.length<2;$('account-count-hint').textContent=accounts.length===0?'尚未保存 QQ 音乐账号，请先登录。':accounts.length===1?'目前只保存了 1 个账号。先添加另一个账号，才能切换。':'选择账号后会自动刷新歌单。';$('account-label').textContent=state.active?`账号 · ${state.active.slice(-4)}`:'QQ 账号';return state;}catch(e){toast(e.message);return null;}}
 function stopQr(){clearInterval(qrTimer);qrTimer=null;}
 async function startQr(){stopQr();$('qr-state').hidden=false;$('qr-state').textContent='正在获取二维码…';$('qr-image').hidden=true;try{const data=await api('/api/qq/login/qr',{method:'POST'});$('qr-image').src=data.image;$('qr-image').hidden=false;$('qr-state').textContent='请用 QQ 扫码并确认登录';qrTimer=setInterval(pollQr,2500);}catch(e){$('qr-state').textContent=e.message;}}
 async function pollQr(){try{const data=await api('/api/qq/login/poll');if(data.state==='waiting')return;if(data.state==='scanned'){$('qr-state').textContent='已扫码，请在手机上确认';return;}if(data.state==='expired'){stopQr();$('qr-state').textContent='二维码已过期，请重新获取。';return;}if(data.state==='connected'){stopQr();$('login-dialog').close();await checkSession();await loadCatalog(true);await loadPlaylist(true);toast('QQ 音乐已登录');}}catch(e){stopQr();$('qr-state').textContent=e.message;}}
@@ -817,10 +873,11 @@ async function editChosenQueue(action,before){
 $('queue-move-up').onclick=()=>editChosenQueue('move',chosenQueueTrack.number-1);
 $('queue-move-down').onclick=()=>editChosenQueue('move',chosenQueueTrack.number+2);
 $('queue-remove').onclick=()=>editChosenQueue('remove');
-async function loadRooms(){
-  $('rooms-state').textContent='正在读取房间…';
+async function loadRooms(refresh=false){
+  $('rooms-discover').disabled=true;
+  $('rooms-state').textContent=refresh?'正在发现局域网内的 Sonos…':'正在读取房间…';
   try{
-    roomData=await api('/api/rooms');
+    roomData=await api(`/api/rooms${refresh?'?refresh=1':''}`);
     if(!roomData.rooms.some(room=>room.id===selectedRoomId)){selectedRoomId=roomData.defaultId;localStorage.setItem('sonos-room-id',selectedRoomId);}
     const selected=roomData.rooms.find(room=>room.id===selectedRoomId),fragment=document.createDocumentFragment();
     for(const room of roomData.rooms){
@@ -852,12 +909,14 @@ async function loadRooms(){
     $('rooms-state').textContent=roomData.rooms.length===1?'目前只发现一个房间。':`发现 ${roomData.rooms.length} 个房间 · 当前分组 ${count} 个房间`;
     $('group-controls').hidden=count<2;
   }catch(e){$('rooms-state').textContent=e.message;toast(e.message);}
+  finally{$('rooms-discover').disabled=false;}
 }
 async function changeGroup(input){
   try{await api('/api/rooms/group',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(input)});await loadRooms();await updateStatus();}
   catch(e){toast(e.message);}
 }
 $('rooms-open').onclick=e=>{$('utilities-dialog').close();showDialog('rooms-dialog',e);updateMiniVisibility();loadRooms();};
+$('rooms-discover').onclick=async()=>{await loadRooms(true);await updateStatus();await loadSleep();};
 $('rooms-close').onclick=()=>$('rooms-dialog').close();
 $('rooms-dialog').addEventListener('close',updateMiniVisibility);
 let groupDesired=null,groupSending=false;
@@ -904,5 +963,7 @@ $('sleep-form').onsubmit=e=>{
   setSleep({mode:'until',at:target.toISOString()});
 };
 $('sleep-cancel').onclick=()=>setSleep({mode:'cancel'});
-checkSession().then(async()=>{try{await loadCatalog();}catch(e){toast(e.message);}await loadPlaylist();});loadRooms().then(()=>{updateStatus();loadSleep();pollQueueImport();});setInterval(()=>{if(!document.hidden)updateStatus();},5000);document.addEventListener('visibilitychange',()=>{if(!document.hidden){updateStatus();pollQueueImport();}});setInterval(()=>{if(!document.hidden)loadSleep();},60000);
+const savedPlaylist=playlistCache.latest();
+if(savedPlaylist){libraryAccount=savedPlaylist.account;libraryPlaylistId=savedPlaylist.data.id;displayPlaylist(savedPlaylist.data);$('playlist-open').disabled=true;}
+checkSession().then(state=>{if(!state?.connected)return;void loadPlaylist();void loadCatalog().catch(e=>toast(e.message));});loadRooms().then(()=>{updateStatus();loadSleep();pollQueueImport();});setInterval(()=>{if(!document.hidden)updateStatus();},5000);document.addEventListener('visibilitychange',()=>{if(!document.hidden){updateStatus();pollQueueImport();}});setInterval(()=>{if(!document.hidden)loadSleep();},60000);
 setInterval(()=>{updateProgress();renderSleep();},1000);
