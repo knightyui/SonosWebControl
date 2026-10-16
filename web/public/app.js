@@ -1,6 +1,7 @@
 import {assessTransport,createOperationTracker} from './transport-sync.mjs';
 import {currentPlaylistIndex,visibleCountForIndex} from './library-navigation.mjs';
 import {createPlaylistCache} from './playlist-cache.mjs';
+import {bindBackdropDismiss} from './dialog-interactions.mjs';
 const $=id=>document.getElementById(id);
 let songs=[],visible=60,filtered=[],playlistOptions=[],currentStatus=null,toastTimer,qrTimer,localLogin=false;
 let selectedRoomId=localStorage.getItem('sonos-room-id')||'',roomData=null,chosenSong=null,chosenQueueTrack=null,queueTotal=0;
@@ -536,11 +537,7 @@ for(const id of dialogIds){
   const dialog=$(id);
   dialog.addEventListener('keydown',()=>dialog.classList.remove('suppress-initial-focus'));
   dialog.addEventListener('close',()=>{dialog.classList.remove('suppress-initial-focus');if(id==='quick-search-dialog')dialog.style.top='';});
-  dialog.addEventListener('click',event=>{
-    if(event.target!==dialog)return;
-    const bounds=dialog.getBoundingClientRect();
-    if(event.clientX<bounds.left||event.clientX>bounds.right||event.clientY<bounds.top||event.clientY>bounds.bottom)dialog.close();
-  });
+  bindBackdropDismiss(dialog);
 }
 function bindSwipeToDismiss(id){
   const sheet=$(id);

@@ -795,6 +795,6 @@ http.createServer(async(req,res)=>{try{
     return send(res,200,{ok:true,...result});
   }
   if(req.method==='POST'&&pathname==='/api/play/playlist'){const b=await requestBody(req);return send(res,200,{ok:true,...await startPlaylistPlayback(b,roomId)});}
-  const file=pathname==='/'?'index.html':pathname.slice(1);if(req.method!=='GET'||!['index.html','app.js','transport-sync.mjs','library-navigation.mjs','playlist-cache.mjs','style.css','favicon.svg'].includes(file))return send(res,404,{error:'页面不存在。'});
+  const file=pathname==='/'?'index.html':pathname.slice(1);if(req.method!=='GET'||!['index.html','app.js','transport-sync.mjs','library-navigation.mjs','playlist-cache.mjs','dialog-interactions.mjs','style.css','favicon.svg'].includes(file))return send(res,404,{error:'页面不存在。'});
   const contents=await readFile(path.join(dir,file));res.writeHead(200,{'Content-Type':{'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.mjs':'text/javascript; charset=utf-8','.svg':'image/svg+xml'}[path.extname(file)]});res.end(contents);
 }catch(e){console.error(e);send(res,500,{error:e.message||'服务出错。'});}}).listen(port,host,()=>console.log(`Sonos web http://${host}:${port}; Sonos ${process.env.SONOS_IP||'自动发现'}`));
