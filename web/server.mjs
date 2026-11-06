@@ -70,6 +70,8 @@ let playlistCatalog;
 const catalogLoads=new Map(),playlistLoads=new Map();
 const lyricsCache=new Map();
 const albumMidCache=new Map();
+const albumMidLoads=new Map();
+const songDetailCache=new Map();
 const searchedSongs=new Map();
 const searchedSongById=id=>[...searchedSongs.values()].find(song=>song.id===Number(id));
 await loadSession();
@@ -154,10 +156,17 @@ async function qqAlbumMid(id){
   url.search=new URLSearchParams({songid:id,tpl:'yqq_song_detail',format:'json'}).toString();
   const response=await fetch(url,{headers:{Referer:'https://y.qq.com/'},signal:AbortSignal.timeout(10000)});
   if(!response.ok)throw Error(`专辑信息请求失败：${response.status}`);
-  const mid=String((await response.json()).data?.[0]?.album?.mid||'');
+  const detail=(await response.json()).data?.[0];
+  const mid=String(detail?.album?.mid||'');
+  if(detail){songDetailCache.set(Number(id),mapSong(detail,0));if(songDetailCache.size>200)songDetailCache.delete(songDetailCache.keys().next().value);}
   albumMidCache.set(id,{mid,at:Date.now()});
   if(albumMidCache.size>200)albumMidCache.delete(albumMidCache.keys().next().value);
   return mid;
+}
+function warmSongDetails(id){
+  if(albumMidLoads.has(id))return;
+  const loading=qqAlbumMid(id).catch(()=>{}).finally(()=>albumMidLoads.delete(id));
+  albumMidLoads.set(id,loading);
 }
 function parseLyrics(source){
   const lines=[];
@@ -271,7 +280,7 @@ async function confirmQueuePlayback(target,number,songId){
   throw Error('Sonos 未确认播放所选歌曲，原队列已保留。');
 }
 async function qqQueueContext(target){
-    const fav=items((await browse('FV:2',0,500)).xml).find(x=>tag(x,'title').includes('我喜欢')&&x.includes('PLAYLIST_FAV'));
+    const fav=items((await browse('FV:2',0,500,target)).xml).find(x=>tag(x,'title').includes('我喜欢')&&x.includes('PLAYLIST_FAV'));
     const favoriteUri=fav?tag(fav,'res'):'';
     const currentUri=tag(await soap('AVTransport','GetPositionInfo',{InstanceID:0},target),'TrackURI');
     const currentQQ=currentUri.startsWith('x-sonos-http:SONG')?currentUri:'';
@@ -300,16 +309,23 @@ async function songByMid(mid){
   if(!song)throw Error('歌曲不在当前歌单或近期搜索结果中，请重新搜索。');
   return song;
 }
+async function activateQueue(target,coordinatorId,number){
+  const queueUri=`x-rincon-queue:${coordinatorId}#0`;
+  const media=await soap('AVTransport','GetMediaInfo',{InstanceID:0},target);
+  if(tag(media,'CurrentURI')!==queueUri)
+    await soap('AVTransport','SetAVTransportURI',{InstanceID:0,CurrentURI:queueUri,CurrentURIMetaData:''},target);
+  await soap('AVTransport','Seek',{InstanceID:0,Unit:'TRACK_NR',Target:number},target);
+  await soap('AVTransport','Play',{InstanceID:0,Speed:1},target);
+}
 async function playSong(mid,roomId){
-  const song=await songByMid(mid),{target}=await coordinator(roomId);
+  const song=await songByMid(mid),{target,coordinatorId}=await coordinator(roomId);
   let number=await queueTrack(target,song.id);
   if(!number){
     await enqueueSong(target,song,false);
     number=await queueTrack(target,song.id);
     if(!number)throw Error('歌曲已加入 Sonos 队列，但无法定位播放位置。请刷新队列后重试。');
   }
-  await soap('AVTransport','Seek',{InstanceID:0,Unit:'TRACK_NR',Target:number},target);
-  await soap('AVTransport','Play',{InstanceID:0,Speed:1},target);
+  await activateQueue(target,coordinatorId,number);
   return {title:song.title,artist:song.artist,queueNumber:Number(number)};
 }
 const queueImports=new Map();
@@ -366,6 +382,7 @@ async function startPlaylistPlayback(input,roomId){
   if(!song||song.mid!==String(input.mid||''))throw Error('歌曲与当前歌单不一致，请刷新后重试。');
   const {target,coordinatorId}=await coordinator(roomId);
   return withQueueMutation(target,async()=>{
+    if(list.account!==historyAccount()||list.id!==selectedPlaylistId)throw Error('QQ 账号或歌单已切换，请重新选择歌曲。');
     let previous=queueImports.get(target);
     if(!previous||['error','cancelled'].includes(previous.phase)){
       const match=await matchingPlaylistOrder(target,list.songs);
@@ -391,8 +408,7 @@ async function startPlaylistPlayback(input,roomId){
             if(match){previous.order=match.order;previous.queueUpdateId=match.updateId;position=match.order.indexOf(index)+1;item=items((await browse('Q:0',position-1,1,target)).xml)[0]||'';}
           }
           if(songIdFromItem(item)===song.id){
-            await soap('AVTransport','Seek',{InstanceID:0,Unit:'TRACK_NR',Target:position},target);
-            await soap('AVTransport','Play',{InstanceID:0,Speed:1},target);
+            await activateQueue(target,coordinatorId,position);
             previous.selectedTitle=song.title;
             return {title:song.title,artist:song.artist,queueNumber:position,import:visibleQueueImport(previous)};
           }
@@ -545,12 +561,11 @@ async function playQueueTrack(input,roomId){
   const number=Number(input.number);
   if(!Number.isInteger(number)||number<1||number>10000)throw Error('队列位置无效。');
   if(!/^[a-f0-9]{24}$/.test(String(input.key||'')))throw Error('请刷新播放队列后重试。');
-  const {target}=await coordinator(roomId);
+  const {target,coordinatorId}=await coordinator(roomId);
   const page=await browse('Q:0',number-1,1,target);
   const item=items(page.xml)[0];
   assertQueueTrack(item?{number:queueItemNumber(item),key:queueItemKey(item)}:null,{number,key:input.key});
-  await soap('AVTransport','Seek',{InstanceID:0,Unit:'TRACK_NR',Target:number},target);
-  await soap('AVTransport','Play',{InstanceID:0,Speed:1},target);
+  await activateQueue(target,coordinatorId,number);
 }
 async function editQueue(input,roomId){
   const number=Number(input.number),{target}=await coordinator(roomId);
@@ -629,15 +644,16 @@ async function status(roomId){
   const uri=tag(position,'TrackURI'),songId=Number(/SONG(?:%3[aA]|:)(\d+)(?:(?:%3[aA]|:)|\.)/.exec(uri)?.[1]||0);
   let title=tag(metadata,'title'),artist=tag(metadata,'creator'),album=tag(metadata,'album'),duration=tag(position,'TrackDuration');
   if(songId&&(!title||!artist||!albumArt||!duration||duration==='0:00:00')){
-    let song=cached?.songs.find(s=>s.id===songId)||searchedSongById(songId);
-    if(!song){try{song=(await playlist()).songs.find(s=>s.id===songId);}catch{}}
+    const song=cached?.songs.find(s=>s.id===songId)||searchedSongById(songId)||songDetailCache.get(songId);
+    if(!song)warmSongDetails(songId);
     if(song){
       title||=song.title;artist||=song.artist;album||=song.album;
       if((!duration||duration==='0:00:00')&&song.duration)duration=`${Math.floor(song.duration/3600)}:${String(Math.floor(song.duration/60)%60).padStart(2,'0')}:${String(song.duration%60).padStart(2,'0')}`;
       if(!albumArt){
         let albumMid=song.albumMid;
         if(!/^[A-Za-z0-9]{14}$/.test(albumMid)){
-          try{albumMid=await qqAlbumMid(songId);}catch{}
+          albumMid=albumMidCache.get(songId)?.mid||'';
+          warmSongDetails(songId);
         }
         if(/^[A-Za-z0-9]{14}$/.test(albumMid))albumArt=`/api/qq/art?mid=${albumMid}`;
       }
@@ -645,9 +661,20 @@ async function status(roomId){
   }
   return {room,roomId:selectedRoomId,groupSize,model,ip:new URL(device).hostname,playing:tag(transport,'CurrentTransportState')==='PLAYING',state:tag(transport,'CurrentTransportState'),volume:Number(tag(volume,'CurrentVolume')),groupVolume:groupSize>1?Number(tag(groupVolume,'CurrentVolume')):null,mute:tag(mute,'CurrentMute')==='1',shuffle:shuffleModes.get(target)===true||mode.startsWith('SHUFFLE'),repeatOne:['REPEAT_ONE','SHUFFLE_REPEAT_ONE'].includes(mode),repeatAll:['REPEAT_ALL','SHUFFLE'].includes(mode),crossfade:tag(crossfade,'CrossfadeMode')==='1',playMode:mode,title,artist,album,albumArt,songId,track:Number(tag(position,'Track')),position:tag(position,'RelTime'),duration};
 }
+async function resumePlayback(target,coordinatorId){
+  const media=await soap('AVTransport','GetMediaInfo',{InstanceID:0},target);
+  const uri=tag(media,'CurrentURI');
+  if(!uri||uri.startsWith('x-rincon-queue:')&&!Number(tag(media,'NrTracks'))){
+    const queue=await browse('Q:0',0,1,target);
+    if(!queue.total)throw Error('当前播放队列为空，请先从歌单选择一首歌曲。');
+    await activateQueue(target,coordinatorId,1);
+    return;
+  }
+  await soap('AVTransport','Play',{InstanceID:0,Speed:1},target);
+}
 async function control(action,value,roomId,selected){
-  const {target,device,groupSize}=selected||await coordinator(roomId), transport=(name,args={})=>soap('AVTransport',name,{InstanceID:0,...args},target);
-  if(action==='play')await transport('Play',{Speed:1}); else if(action==='pause')await transport('Pause');
+  const {target,device,groupSize,coordinatorId}=selected||await coordinator(roomId), transport=(name,args={})=>soap('AVTransport',name,{InstanceID:0,...args},target);
+  if(action==='play')await resumePlayback(target,coordinatorId); else if(action==='pause')await transport('Pause');
   else if(action==='next'||action==='previous'){
     await transport(action==='next'?'Next':'Previous');
     await transport('Play',{Speed:1});
@@ -795,6 +822,6 @@ http.createServer(async(req,res)=>{try{
     return send(res,200,{ok:true,...result});
   }
   if(req.method==='POST'&&pathname==='/api/play/playlist'){const b=await requestBody(req);return send(res,200,{ok:true,...await startPlaylistPlayback(b,roomId)});}
-  const file=pathname==='/'?'index.html':pathname.slice(1);if(req.method!=='GET'||!['index.html','app.js','transport-sync.mjs','library-navigation.mjs','playlist-cache.mjs','dialog-interactions.mjs','style.css','favicon.svg'].includes(file))return send(res,404,{error:'页面不存在。'});
-  const contents=await readFile(path.join(dir,file));res.writeHead(200,{'Content-Type':{'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.mjs':'text/javascript; charset=utf-8','.svg':'image/svg+xml'}[path.extname(file)]});res.end(contents);
+  const file=pathname==='/'?'index.html':pathname.slice(1);if(req.method!=='GET'||!['index.html','app.js','transport-sync.mjs','library-navigation.mjs','playlist-cache.mjs','dialog-interactions.mjs','style.css','liquid-glass.css','favicon.svg'].includes(file))return send(res,404,{error:'页面不存在。'});
+  const contents=await readFile(path.join(dir,file));res.writeHead(200,{'Cache-Control':'no-cache','Content-Type':{'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.mjs':'text/javascript; charset=utf-8','.svg':'image/svg+xml'}[path.extname(file)]});res.end(contents);
 }catch(e){console.error(e);send(res,500,{error:e.message||'服务出错。'});}}).listen(port,host,()=>console.log(`Sonos web http://${host}:${port}; Sonos ${process.env.SONOS_IP||'自动发现'}`));

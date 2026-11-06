@@ -1,4 +1,4 @@
-import {readFile, writeFile, chmod, mkdir} from 'node:fs/promises';
+import {readFile, writeFile, rename, chmod, mkdir} from 'node:fs/promises';
 import {randomUUID} from 'node:crypto';
 import path from 'node:path';
 import {dataDir} from './data-dir.mjs';
@@ -9,6 +9,7 @@ let active='';
 const accounts=new Map();
 const selectedPlaylists=new Map();
 let pending=null;
+let writing=Promise.resolve();
 const pairs=headers=>headers.getSetCookie().map(value=>value.split(';',1)[0]).filter(Boolean);
 const merge=(jar,values)=>{for(const value of values){const i=value.indexOf('=');if(i>0&&value.slice(i+1))jar.set(value.slice(0,i),value.slice(i+1));}};
 const joined=jar=>[...jar].map(([key,value])=>`${key}=${value}`).join('; ');
@@ -27,7 +28,16 @@ const accountId=value=>{
   const wxuin=/(?:^|;)\s*wxuin=(\d+)/.exec(value)?.[1]||'';
   return uin&&uin!=='0'?uin:wxuin||uin;
 };
-async function persist(){await mkdir(dataDir,{recursive:true});await writeFile(file,JSON.stringify({active,accounts:Object.fromEntries(accounts),selectedPlaylists:Object.fromEntries(selectedPlaylists)}),{encoding:'utf8',mode:0o600});await chmod(file,0o600);}
+function persist(){
+  writing=writing.catch(()=>{}).then(async()=>{
+    await mkdir(dataDir,{recursive:true});
+    const temporary=`${file}.tmp`;
+    await writeFile(temporary,JSON.stringify({active,accounts:Object.fromEntries(accounts),selectedPlaylists:Object.fromEntries(selectedPlaylists)}),{encoding:'utf8',mode:0o600});
+    await chmod(temporary,0o600);
+    await rename(temporary,file);
+  });
+  return writing;
+}
 export async function loadSession(){try{
   const saved=JSON.parse(await readFile(file,'utf8'));
   if(saved.cookie){const valid=checkCookie(saved.cookie);accounts.set(accountId(valid),valid);active=accountId(valid);}

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {bindBackdropDismiss} from '../public/dialog-interactions.mjs';
+import {bindBackdropDismiss,bindDialogEditing} from '../public/dialog-interactions.mjs';
 
 function fixture(){
   const listeners=new Map();
@@ -76,4 +76,16 @@ test('all dialogs use the guarded backdrop interaction and the module is served'
   assert.match(app,/from '\.\/dialog-interactions\.mjs'/);
   assert.match(app,/for\(const id of dialogIds\)\{[\s\S]*?bindBackdropDismiss\(dialog\)/);
   assert.match(server,/'playlist-cache\.mjs','dialog-interactions\.mjs','style\.css'/);
+});
+
+ test('editing layout remains stable after input blur until the dialog closes',()=>{
+  const handlers=new Map(),classes=new Set();
+  const dialog={addEventListener:(type,fn)=>handlers.set(type,fn),classList:{add:name=>classes.add(name),remove:name=>classes.delete(name)}};
+  bindDialogEditing(dialog);
+  handlers.get('focusin')({target:{matches:()=>true}});
+  assert.equal(classes.has('dialog-editing'),true);
+  // A subsequent button focus must not put the form back under the keyboard.
+  handlers.get('focusin')({target:{matches:()=>false}});
+  assert.equal(classes.has('dialog-editing'),true);
+  handlers.get('close')();assert.equal(classes.has('dialog-editing'),false);
 });

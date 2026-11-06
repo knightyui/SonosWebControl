@@ -1,20 +1,23 @@
 import {assessTransport,createOperationTracker} from './transport-sync.mjs';
 import {currentPlaylistIndex,visibleCountForIndex} from './library-navigation.mjs';
 import {createPlaylistCache} from './playlist-cache.mjs';
-import {bindBackdropDismiss} from './dialog-interactions.mjs';
+import {bindBackdropDismiss,bindDialogEditing} from './dialog-interactions.mjs';
 const $=id=>document.getElementById(id);
 let songs=[],visible=60,filtered=[],playlistOptions=[],currentStatus=null,toastTimer,qrTimer,localLogin=false;
-let selectedRoomId=localStorage.getItem('sonos-room-id')||'',roomData=null,chosenSong=null,chosenQueueTrack=null,queueTotal=0;
+function savedRoom(){try{return localStorage.getItem('sonos-room-id')||'';}catch{return '';}}
+let roomGeneration=0;
+let selectedRoomId=savedRoom(),roomData=null,chosenSong=null,chosenQueueTrack=null,queueTotal=0;
 const playlistCache=createPlaylistCache({getItem:key=>localStorage.getItem(key),setItem:(key,value)=>localStorage.setItem(key,value),removeItem:key=>localStorage.removeItem(key)});
 let libraryAccount='',libraryPlaylistId='',libraryReady=false,playlistRequest=0,displayedPlaylistId='';
 let seeking=false,volumeDragging=false,volumeDesired=null,volumeSending=false,artUrl='';
 let lyrics=[],lyricTrack='',lyricMessage='正在读取歌词…',activeLyricIndex=-2;
 let positionAnchor={seconds:0,at:Date.now(),playing:false};
-let statusRequest=0,transportSettlingUntil=0,expectedPlaying=null;
+let statusRequest=0,transportSettlingUntil=0,expectedPlaying=null,statusInFlight=null;
 let transportExpectation=null;
 const transportOperations=createOperationTracker();
 let playRequestGeneration=0;
 let pendingShuffleValue=null,shuffleGeneration=0;
+const pendingModes=new Map();let modeGeneration=0;
 const themeProperties=['--page-bg','--page-glow','--surface','--surface-deep','--surface-raised','--border','--accent'];
 function resetSongTheme(){for(const name of themeProperties)document.documentElement.style.removeProperty(name);}
 function rgbToHsl(r,g,b){
@@ -62,8 +65,17 @@ function applySongTheme(image){
 function toast(message){const el=$('toast');el.textContent=message;el.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove('show'),4000);}
 async function api(path,options){
   const url=new URL(path,location.href);
-  if(selectedRoomId&&!url.searchParams.has('room')&&(/^\/api\/(status|control|queue|sleep|play)(?:\/|$)/).test(url.pathname))url.searchParams.set('room',selectedRoomId);
-  const response=await fetch(url,options),data=await response.json();if(!response.ok)throw Error(data.error||`请求失败：${response.status}`);return data;
+  if(selectedRoomId&&!url.searchParams.has('room')&&(/^\/api\/(status|control|queue|sleep|play|history\/record)(?:\/|$)/).test(url.pathname))url.searchParams.set('room',selectedRoomId);
+  const writing=options?.method&&options.method!=='GET';
+  try{
+    const response=await fetch(url,{...options,signal:options?.signal||AbortSignal.timeout(writing?90000:30000)});
+    let data;try{data=await response.json();}catch{throw Error(`服务响应无效（HTTP ${response.status}），请重试。`);}
+    if(!response.ok)throw Error(data.error||`请求失败：${response.status}`);
+    return data;
+  }catch(error){
+    if(error.name==='TimeoutError')throw Error(writing?'请求超时，操作可能已到达音箱，请先检查当前状态。':'请求超时，请检查网络后重试。');
+    throw error;
+  }
 }
 function paintRange(slider){const max=Number(slider.max)||1;slider.style.setProperty('--range-fill',`${Math.max(0,Math.min(100,Number(slider.value)/max*100))}%`);}
 function duration(seconds){return `${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`;}
@@ -86,7 +98,7 @@ function renderLyricList(){
 }
 function scrollActiveLyric(){
   const list=$('lyrics-list'),active=list.querySelector('.lyric-line.active');
-  if(active)list.scrollTo({top:active.offsetTop-list.clientHeight/2+active.offsetHeight/2,behavior:'smooth'});
+  if(active)list.scrollTo({top:active.offsetTop-list.clientHeight/2+active.offsetHeight/2,behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});
 }
 function renderLyricsAt(seconds){
   if(!lyrics.length){$('lyric-current').textContent=lyricMessage;$('lyric-next').textContent='';$('lyrics-open').classList.remove('has-translation');$('mini-lyric-open').textContent=lyricMessage;return;}
@@ -119,13 +131,13 @@ function renderStatus(s){
   currentStatus=s;
   $('connection').textContent=`● ${s.room} · 已连接`;$('connection').className='connection ok';
   $('room').textContent=s.room;$('player-room-name').textContent=s.room;$('model').textContent=s.model;
-  $('track-title').textContent=s.title||'暂无播放曲目';$('track-artist').textContent=s.artist||'从下方歌单选择歌曲';
-  $('mini-title').textContent=s.title||'暂无播放曲目';$('mini-artist').textContent=s.artist||s.room;
+  $('track-title').textContent=s.title||(s.playing?'正在播放':'暂无播放曲目');$('track-artist').textContent=s.artist||'从下方歌单选择歌曲';
+  $('mini-title').textContent=s.title||(s.playing?'正在播放':'暂无播放曲目');$('mini-artist').textContent=s.artist||s.room;
   $('lyrics-title').textContent=s.title||'歌词';$('lyrics-artist').textContent=s.artist||'';
-  $('room-menu-name').textContent=s.room;$('queue-room-name').textContent=s.room;$('utility-track').textContent=s.title||'暂无播放曲目';$('utility-artist').textContent=s.artist||'QQ 音乐';
+  $('room-menu-name').textContent=s.room;$('queue-room-name').textContent=s.room;$('utility-track').textContent=s.title||(s.playing?'正在播放':'暂无播放曲目');$('utility-artist').textContent=s.artist||'QQ 音乐';
   for(const [id,value] of [['repeat-all',s.repeatAll],['crossfade',s.crossfade]]){$(id).classList.toggle('active',Boolean(value));$(id).setAttribute('aria-pressed',String(Boolean(value)));}
   $('group-controls').hidden=s.groupSize<2;
-  if(s.groupSize>1){$('group-volume').value=s.groupVolume;paintRange($('group-volume'));$('group-volume-value').textContent=`${s.groupVolume}%`;}
+  if(s.groupSize>1&&!groupSending&&!volumeDragging){$('group-volume').value=s.groupVolume;paintRange($('group-volume'));$('group-volume-value').textContent=`${s.groupVolume}%`;}
   positionAnchor={seconds:timecode(s.position),at:Date.now(),playing:s.playing};
   const length=timecode(s.duration);
   for(const prefix of ['','mini-']){
@@ -183,11 +195,14 @@ function beginTransportSync(playing,position,requireTrackChange=false){
   return operation;
 }
 async function updateStatus(){
-  const request=++statusRequest;
+  if(statusInFlight?.room===roomGeneration&&statusInFlight.request===statusRequest)return statusInFlight.promise;
+  const request=++statusRequest,room=roomGeneration;
+  const pending=(async()=>{
   try{
     const status=await api('/api/status');
-    if(request!==statusRequest)return null;
-    const displayStatus=pendingShuffleValue===null?status:{...status,shuffle:pendingShuffleValue};
+    if(request!==statusRequest||room!==roomGeneration)return null;
+    for(const [key,pending] of pendingModes)if(pending.acknowledged&&status[key]===pending.value||Date.now()>pending.expires)pendingModes.delete(key);
+    const displayStatus={...status,...Object.fromEntries([...pendingModes].map(([key,pending])=>[key,pending.value])),...(pendingShuffleValue===null?{}:{shuffle:pendingShuffleValue})};
     const awaitingExpectedState=expectedPlaying!==null&&transportSettlingUntil>Date.now();
     const assessment=awaitingExpectedState&&transportExpectation?assessTransport(status,transportExpectation):null;
     if(assessment&&!assessment.confirmed){
@@ -198,11 +213,14 @@ async function updateStatus(){
     renderStatus(displayStatus);
     return status;
   }catch(e){
-    if(request!==statusRequest)return null;
+    if(request!==statusRequest||room!==roomGeneration)return null;
     $('connection').textContent='● 音响未连接';$('connection').className='connection error';
     if(!currentStatus)toast(e.message);
     return null;
   }
+  })();
+  const current={request,room,promise:pending};statusInFlight=current;
+  try{return await pending;}finally{if(statusInFlight===current)statusInFlight=null;}
 }
 async function settleTransport(playing,songId=0,operation){
   const deadline=Date.now()+6500;
@@ -225,7 +243,7 @@ async function settleTransport(playing,songId=0,operation){
     (!expectation||assessTransport(status,expectation).confirmed));
 }
 async function playSong(song,row){
-  const playRequest=++playRequestGeneration;
+  const playRequest=++playRequestGeneration,room=roomGeneration;
   const inSearch=Boolean(row.closest('#quick-search-results'));
   const inHistory=Boolean(row.closest('#history-list'));
   const fromSearch=inSearch||inHistory;
@@ -235,7 +253,7 @@ async function playSong(song,row){
     const payload=fromSearch?{mid:song.mid}:{mid:song.mid,index:song.index,playlistId:$('qq-playlist').value};
     if(!fromSearch)lastQueueImportError='';
     const result=await api(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-    if(playRequest!==playRequestGeneration)return;
+    if(playRequest!==playRequestGeneration||room!==roomGeneration)return;
     if(result.import)renderQueueImport(result.import);
     const operation=beginTransportSync(true);
     if(!await settleTransport(true,song.id,operation)){
@@ -245,7 +263,7 @@ async function playSong(song,row){
     try{await api('/api/history/record',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mid:song.mid})});}catch{/* 播放成功不依赖本地历史写入。 */}
     if(inSearch)$('quick-search-state').textContent=`正在播放：${song.title}`;
     if(!$('history-panel').hidden)await loadHistory();
-  }catch(e){if(playRequest===playRequestGeneration){toast(e.message);if(inSearch)$('quick-search-state').textContent=e.message;}}
+  }catch(e){if(playRequest===playRequestGeneration&&room===roomGeneration){toast(e.message);if(inSearch)$('quick-search-state').textContent=e.message;}}
   finally{row.disabled=false;row.classList.remove('loading');}
 }
 let queueImportPolling=false,queueImportTimer=null,lastQueueImportError='';
@@ -298,7 +316,7 @@ function renderSongs(append=false){
   if(!append){
     const query=$('search').value.trim().toLocaleLowerCase();
     filtered=query?songs.filter(s=>`${s.title} ${s.artist} ${s.album}`.toLocaleLowerCase().includes(query)):songs;
-    $('list-state').textContent=filtered.length?`${query?`找到 ${filtered.length} 首 · `:''}共 ${songs.length} 首歌曲`:query?'没有找到歌曲，试试其他关键词。':'歌单为空，点击“刷新歌单”重试。';
+    $('list-state').textContent=filtered.length?`${query?`找到 ${filtered.length} 首 · `:''}共 ${songs.length} 首歌曲`:query?'没有找到歌曲，试试其他关键词。':!libraryAccount?'登录 QQ 音乐后查看歌单':!displayedPlaylistId?'正在加载歌单…':'当前歌单没有歌曲，可切换其他歌单。';
     list.replaceChildren();
   }
   const fragment=document.createDocumentFragment();
@@ -342,13 +360,15 @@ function locatePlayingSong(){
   requestAnimationFrame(append);
 }
 $('locate-playing').onclick=locatePlayingSong;
-let quickSearchRequest=0,quickSearchTimer,quickSearchPage=0,quickSearchLoading=false;
+let quickSearchRequest=0,quickSearchTimer,quickSearchPage=0,quickSearchLoading=false,quickSearchInitialized=false;
 function appendQuickResults(matches){
   const fragment=document.createDocumentFragment();
   for(const song of matches)fragment.append(createSongRow(song));
   $('quick-search-results').insertBefore(fragment,$('quick-search-more'));
 }
 async function renderQuickResults(){
+  quickSearchInitialized=true;
+  $('quick-search-clear').hidden=!$('quick-search').value;
   const request=++quickSearchRequest;
   const query=$('quick-search').value.trim().toLocaleLowerCase();
   quickSearchPage=0;
@@ -373,7 +393,7 @@ async function renderQuickResults(){
   }
 }
 async function loadMoreQuickResults(){
-  if(quickSearchLoading||quickSearchPage<1)return;
+  if(quickSearchLoading||quickSearchPage<1||$('quick-search-more').disabled)return;
   const request=quickSearchRequest,query=$('quick-search').value.trim().toLocaleLowerCase();
   quickSearchLoading=true;
   const button=$('quick-search-more');button.disabled=true;button.textContent='正在加载…';
@@ -388,7 +408,7 @@ async function loadMoreQuickResults(){
   }catch(error){if(request===quickSearchRequest)$('quick-search-state').textContent=`加载更多失败：${error.message}`;}
   finally{if(request===quickSearchRequest){quickSearchLoading=false;button.disabled=false;button.textContent='加载更多歌曲';}}
 }
-function scheduleQuickSearch(){quickSearchRequest++;clearTimeout(quickSearchTimer);quickSearchTimer=setTimeout(renderQuickResults,260);}
+function scheduleQuickSearch(){quickSearchRequest++;$('quick-search-clear').hidden=!$('quick-search').value;$('quick-search-more').disabled=true;clearTimeout(quickSearchTimer);quickSearchTimer=setTimeout(renderQuickResults,260);}
 $('quick-search-more').onclick=loadMoreQuickResults;
 const moreObserver=new IntersectionObserver(([entry])=>{
   if(entry.isIntersecting&&!$('more').hidden&&visible<filtered.length){
@@ -421,7 +441,7 @@ function setLibraryContext(account,id){
     $('account-state').hidden=true;
     $('playlist-title').textContent=libraryReady?'正在加载歌单…':'请登录 QQ 音乐';$('song-count').textContent='';
   }
-  if(accountChanged){playlistOptions=[];$('qq-playlist').replaceChildren();renderPlaylistChoices();}
+  if(accountChanged){historyRequest++;$('history-list').replaceChildren();$('history-state').textContent='正在读取本地记录…';playlistOptions=[];$('qq-playlist').replaceChildren();renderPlaylistChoices();}
   const saved=playlistCache.read(account,id);
   if(saved)displayPlaylist(saved.data);
   else if(!changed)updateCachedRowAvailability();
@@ -444,14 +464,17 @@ async function loadPlaylist(refresh=false){
     if(refresh||!hasSnapshot)toast(e.message);
   }finally{if(request===playlistRequest)$('refresh').disabled=false;}
 }
+let historyRequest=0;
 async function loadHistory(){
+  const request=++historyRequest,account=libraryAccount;
   $('history-state').textContent='正在读取本地记录…';
   try{
     const {songs:recent}=await api('/api/history');
+    if(request!==historyRequest||account!==libraryAccount)return;
     $('history-list').replaceChildren(...recent.map(song=>createSongRow(song,true)));
     $('history-state').textContent=recent.length?`最近点播 ${recent.length} 首 · 每个账号最多保留 100 首`:'还没有记录。从歌单或全曲库选择一首歌开始播放。';
     $('history-clear').hidden=!recent.length;
-  }catch(error){$('history-state').textContent=error.message;}
+  }catch(error){if(request===historyRequest&&account===libraryAccount)$('history-state').textContent=error.message;}
 }
 function showLibraryView(view){
   locateGeneration++;
@@ -461,6 +484,8 @@ function showLibraryView(view){
   $('history-tab').setAttribute('aria-selected',String(history));
   $('playlist-tab').tabIndex=history?-1:0;
   $('history-tab').tabIndex=history?0:-1;
+  const label=history?'刷新最近播放':'刷新歌单';
+  $('refresh').setAttribute('aria-label',label);$('refresh').title=label;$('refresh-label').textContent=label;
   markCurrentPlaylistSong();
   if(history)void loadHistory();
 }
@@ -515,9 +540,31 @@ async function selectPlaylist(id,button){
   finally{renderPlaylistChoices();}
 }
 async function checkSession(){try{const state=await api('/api/qq/session');setLibraryContext(state.active||'',state.selectedId||'');if(!state.connected)playlistCache.clear();localLogin=state.local;$('login').hidden=!state.canQrLogin;$('cookie-import').hidden=!state.local;$('login').textContent=state.connected?'添加或重新登录账号':'登录 QQ 音乐';$('login-help').textContent=state.local?'请用 QQ 扫码并确认。成功后歌单会自动刷新。':'请用另一台设备扫描二维码，或在 QQ 中识别二维码并确认。成功后歌单会自动刷新。';const accounts=state.accounts||[];const selector=$('qq-account');selector.replaceChildren();for(const account of accounts){const option=new Option(`QQ 账号 · 尾号 ${account.id.slice(-4)}`,account.id);selector.add(option);}selector.value=state.active||'';selector.disabled=accounts.length<2;$('account-count-hint').textContent=accounts.length===0?'尚未保存 QQ 音乐账号，请先登录。':accounts.length===1?'目前只保存了 1 个账号。先添加另一个账号，才能切换。':'选择账号后会自动刷新歌单。';$('account-label').textContent=state.active?`账号 · ${state.active.slice(-4)}`:'QQ 账号';return state;}catch(e){toast(e.message);return null;}}
-function stopQr(){clearInterval(qrTimer);qrTimer=null;}
-async function startQr(){stopQr();$('qr-state').hidden=false;$('qr-state').textContent='正在获取二维码…';$('qr-image').hidden=true;try{const data=await api('/api/qq/login/qr',{method:'POST'});$('qr-image').src=data.image;$('qr-image').hidden=false;$('qr-state').textContent='请用 QQ 扫码并确认登录';qrTimer=setInterval(pollQr,2500);}catch(e){$('qr-state').textContent=e.message;}}
-async function pollQr(){try{const data=await api('/api/qq/login/poll');if(data.state==='waiting')return;if(data.state==='scanned'){$('qr-state').textContent='已扫码，请在手机上确认';return;}if(data.state==='expired'){stopQr();$('qr-state').textContent='二维码已过期，请重新获取。';return;}if(data.state==='connected'){stopQr();$('login-dialog').close();await checkSession();await loadCatalog(true);await loadPlaylist(true);toast('QQ 音乐已登录');}}catch(e){stopQr();$('qr-state').textContent=e.message;}}
+let qrGeneration=0,qrPolling=false;
+function stopQr(){clearInterval(qrTimer);qrTimer=null;qrGeneration++;qrPolling=false;}
+async function startQr(){
+  stopQr();const generation=qrGeneration;
+  $('qr-state').hidden=false;$('qr-state').textContent='正在获取二维码…';$('qr-image').hidden=true;
+  try{
+    const data=await api('/api/qq/login/qr',{method:'POST'});
+    if(generation!==qrGeneration||!$('login-dialog').open)return;
+    $('qr-image').src=data.image;$('qr-image').hidden=false;$('qr-state').textContent='请用 QQ 扫码并确认登录';
+    qrTimer=setInterval(pollQr,2500);
+  }catch(e){if(generation===qrGeneration&&$('login-dialog').open)$('qr-state').textContent=e.message;}
+}
+async function pollQr(){
+  if(qrPolling||!$('login-dialog').open)return;
+  const generation=qrGeneration;qrPolling=true;
+  try{
+    const data=await api('/api/qq/login/poll');
+    if(generation!==qrGeneration||!$('login-dialog').open)return;
+    if(data.state==='waiting')return;
+    if(data.state==='scanned'){$('qr-state').textContent='已扫码，请在手机上确认';return;}
+    if(data.state==='expired'){stopQr();$('qr-state').textContent='二维码已过期，请重新获取。';return;}
+    if(data.state==='connected'){stopQr();$('login-dialog').close();await checkSession();await loadCatalog(true);await loadPlaylist(true);toast('QQ 音乐已登录');}
+  }catch(e){if(generation===qrGeneration){stopQr();$('qr-state').textContent=e.message;}}
+  finally{if(generation===qrGeneration)qrPolling=false;}
+}
 function syncVisualViewport(){
   const view=window.visualViewport;
   document.documentElement.style.setProperty('--visual-height',`${Math.round(view?.height||window.innerHeight)}px`);
@@ -538,20 +585,22 @@ for(const id of dialogIds){
   dialog.addEventListener('keydown',()=>dialog.classList.remove('suppress-initial-focus'));
   dialog.addEventListener('close',()=>{dialog.classList.remove('suppress-initial-focus');if(id==='quick-search-dialog')dialog.style.top='';});
   bindBackdropDismiss(dialog);
+  bindDialogEditing(dialog);
 }
 function bindSwipeToDismiss(id){
   const sheet=$(id);
   let gesture=null,closeTimer,settleTimer,suppressClick=false;
   const mobile=()=>matchMedia('(max-width:720px)').matches;
-  const canStart=target=>{
-    if(!sheet.open||!mobile()||target.closest('input,textarea,select,.queue-volume-slider'))return false;
+  const canStart=(target,x,y)=>{
+    if(target===sheet){const b=sheet.getBoundingClientRect();if(x<b.left||x>b.right||y<b.top||y>b.bottom)return false;}
+    if(!sheet.open||!mobile()||target.closest('input,textarea,select,.queue-volume-slider,.volume-slider,.safe-volume-track'))return false;
     if(target.closest('.queue-list')&&$('queue-list').scrollTop>1)return false;
     if(target.closest('.lyrics-list')&&$('lyrics-list').scrollTop>1)return false;
     if(target.closest('.playlist-list')&&$('playlist-list').scrollTop>1)return false;
     return sheet.scrollTop<=1;
   };
   const start=(x,y,target)=>{
-    if(!canStart(target))return;
+    if(!canStart(target,x,y))return;
     clearTimeout(settleTimer);
     sheet.classList.remove('sheet-settling');
     gesture={x,y,at:performance.now(),offset:0,dragging:false};
@@ -587,13 +636,14 @@ function bindSwipeToDismiss(id){
     }
   };
   sheet.addEventListener('touchstart',event=>{
+    if(event.touches.length!==1){gesture=null;sheet.classList.remove('sheet-dragging');sheet.style.removeProperty('--sheet-offset');return;}
     if(event.touches.length===1)start(event.touches[0].clientX,event.touches[0].clientY,event.target);
   },{passive:true});
   sheet.addEventListener('touchmove',event=>{
     if(event.touches.length===1)move(event.touches[0].clientX,event.touches[0].clientY,event);
   },{passive:false});
   sheet.addEventListener('touchend',finish);
-  sheet.addEventListener('touchcancel',finish);
+  sheet.addEventListener('touchcancel',()=>{gesture=null;sheet.classList.remove('sheet-dragging');sheet.style.removeProperty('--sheet-offset');});
   sheet.addEventListener('pointerdown',event=>{
     if(event.pointerType==='mouse'&&event.button===0)start(event.clientX,event.clientY,event.target);
   });
@@ -601,6 +651,7 @@ function bindSwipeToDismiss(id){
     if(event.pointerType==='mouse')move(event.clientX,event.clientY,event);
   });
   window.addEventListener('pointerup',event=>{if(event.pointerType==='mouse')finish();});
+  window.addEventListener('pointercancel',()=>{gesture=null;sheet.classList.remove('sheet-dragging');sheet.style.removeProperty('--sheet-offset');});
   sheet.addEventListener('click',event=>{
     if(suppressClick){event.preventDefault();event.stopImmediatePropagation();suppressClick=false;}
   },true);
@@ -620,15 +671,25 @@ window.visualViewport?.addEventListener('scroll',placeQuickSearch);
 $('account-open').onclick=e=>{showDialog('account-dialog',e);updateMiniVisibility();};
 $('account-close').onclick=()=>$('account-dialog').close();
 $('account-dialog').addEventListener('close',updateMiniVisibility);
-$('playlist-open').onclick=()=>{$('playlist-filter').value='';renderPlaylistChoices();showDialog('playlist-dialog');updateMiniVisibility();};
+$('playlist-open').onclick=event=>{$('playlist-filter').value='';renderPlaylistChoices();showDialog('playlist-dialog',event);updateMiniVisibility();};
 $('playlist-close').onclick=()=>$('playlist-dialog').close();
 $('playlist-filter').oninput=renderPlaylistChoices;
 $('playlist-dialog').addEventListener('close',updateMiniVisibility);
-$('login').onclick=e=>{$('account-dialog').close();showDialog('login-dialog',e);updateMiniVisibility();startQr();};$('login-close').onclick=()=>$('login-dialog').close();$('login-dialog').onclose=stopQr;$('qr-retry').onclick=startQr;
+$('login').onclick=e=>{$('account-dialog').close();showDialog('login-dialog',e);updateMiniVisibility();startQr();};$('login-back').onclick=e=>{$('login-dialog').close();showDialog('account-dialog',e);updateMiniVisibility();};$('login-close').onclick=()=>$('login-dialog').close();$('login-dialog').onclose=stopQr;$('qr-retry').onclick=startQr;
 $('lyrics-open').onclick=$('mini-lyric-open').onclick=e=>{showDialog('lyrics-dialog',e);updateMiniVisibility();renderLyricsAt(positionAnchor.seconds+(positionAnchor.playing?(Date.now()-positionAnchor.at)/1000:0));scrollActiveLyric();};
 $('lyrics-close').onclick=()=>$('lyrics-dialog').close();$('lyrics-dialog').addEventListener('close',updateMiniVisibility);
 $('cookie-save').onclick=async()=>{const button=$('cookie-save');button.disabled=true;try{await api('/api/qq/login/cookie',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cookie:$('cookie-input').value})});$('cookie-input').value='';$('login-dialog').close();stopQr();await checkSession();await loadCatalog(true);await loadPlaylist(true);toast('QQ 音乐登录状态已保存');}catch(e){toast(e.message);}finally{button.disabled=false;}};
 async function control(action,value){
+  if(!currentStatus){toast('正在读取房间状态，请稍候');return;}
+  const room=roomGeneration;
+  const modeOperation=['mute','repeatOne','repeatAll','crossfade'].includes(action)?++modeGeneration:null;
+  if(modeOperation){
+    statusRequest++;
+    pendingModes.set(action,{value:Boolean(value),generation:modeOperation,acknowledged:false,expires:Date.now()+6500});
+    if(value&&action==='repeatOne')pendingModes.set('repeatAll',{value:false,generation:modeOperation,acknowledged:false,expires:Date.now()+6500});
+    if(value&&action==='repeatAll')pendingModes.set('repeatOne',{value:false,generation:modeOperation,acknowledged:false,expires:Date.now()+6500});
+    renderStatus({...currentStatus,position:duration(Math.floor(livePosition())),...Object.fromEntries([...pendingModes].map(([key,pending])=>[key,pending.value]))});
+  }
   if(['play','pause','next','previous','seek'].includes(action))playRequestGeneration++;
   const shuffleOperation=action==='shuffle'?++shuffleGeneration:null;
   if(shuffleOperation){
@@ -648,16 +709,35 @@ async function control(action,value){
   else if(expected!==null)operation=beginTransportSync(expected,undefined,action==='next'||action==='previous');
   try{
     await api('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,value})});
+    if(room!==roomGeneration)return;
+    if(modeOperation){statusRequest++;for(const pending of pendingModes.values())if(pending.generation===modeOperation)pending.acknowledged=true;}
+    if(shuffleOperation)statusRequest++;
     if(shuffleOperation===shuffleGeneration)pendingShuffleValue=null;
     if(operation&&!transportOperations.isCurrent(operation))return;
     if(expected!==null)await settleTransport(expected,0,operation);else await updateStatus();
   }
-  catch(e){if(shuffleOperation===shuffleGeneration)pendingShuffleValue=null;if(!operation||transportOperations.isCurrent(operation)){expectedPlaying=null;transportExpectation=null;transportSettlingUntil=0;await updateStatus();toast(e.message);}}finally{if(toggle)toggle.disabled=false;}
+  catch(e){if(room!==roomGeneration)return;if(modeOperation)for(const [key,pending] of pendingModes)if(pending.generation===modeOperation)pendingModes.delete(key);if(shuffleOperation===shuffleGeneration)pendingShuffleValue=null;if(!operation||transportOperations.isCurrent(operation)){expectedPlaying=null;transportExpectation=null;transportSettlingUntil=0;await updateStatus();toast(e.message);}}finally{if(toggle)toggle.disabled=false;}
 }
-async function sendVolume(){if(volumeSending)return;volumeSending=true;try{while(volumeDesired!==null){const value=volumeDesired;volumeDesired=null;await api('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'volume',value})});}}catch(e){volumeDesired=null;toast(e.message);}finally{volumeSending=false;await updateStatus();}}
-function queueVolume(value){volumeDesired=value;sendVolume();}
-function showVolume(value){const safe=Math.max(0,Math.min(100,Math.round(value)));for(const prefix of ['','mini-','queue-']){$(prefix+'volume').value=safe;paintRange($(prefix+'volume'));$(prefix+'volume-value').textContent=`${safe}%`;}queueVolume(safe);}
-function guardVolumeTrack(slider){
+async function sendVolume(){
+  if(volumeSending)return;
+  volumeSending=true;
+  try{
+    while(volumeDesired!==null){
+      const pending=volumeDesired;volumeDesired=null;
+      if(pending.generation!==roomGeneration)continue;
+      try{await api(`/api/control?room=${encodeURIComponent(pending.room)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'volume',value:pending.value})});}
+      catch(error){if(pending.generation===roomGeneration)toast(error.message);}
+    }
+  }finally{volumeSending=false;await updateStatus();}
+}
+function queueVolume(value){volumeDesired={value,room:selectedRoomId,generation:roomGeneration};void sendVolume();}
+function showVolume(value){
+  if(!currentStatus)return;
+  const safe=Math.max(0,Math.min(100,Math.round(value)));
+  for(const prefix of ['','mini-','queue-']){$(prefix+'volume').value=safe;paintRange($(prefix+'volume'));$(prefix+'volume-value').textContent=`${safe}%`;}
+  queueVolume(safe);
+}
+function guardVolumeTrack(slider,onValue=showVolume){
   const track=slider.parentElement;
   let pointerId=null,startValue=0;
   track.addEventListener('pointerdown',event=>{
@@ -665,20 +745,22 @@ function guardVolumeTrack(slider){
     const rect=track.getBoundingClientRect(),thumb=20;
     startValue=Number(slider.value);
     const center=rect.left+thumb/2+(rect.width-thumb)*startValue/100;
+    // Block native range jumps even when a caller has no pointer-events CSS.
+    event.preventDefault();
     if(Math.abs(event.clientX-center)>18)return;
-    event.preventDefault();pointerId=event.pointerId;volumeDragging=true;
+    pointerId=event.pointerId;volumeDragging=true;
     track.setPointerCapture(pointerId);
   });
   track.addEventListener('pointermove',event=>{
     if(pointerId!==event.pointerId)return;
     const rect=track.getBoundingClientRect(),thumb=20;
     const raw=Math.round((event.clientX-rect.left-thumb/2)/Math.max(1,rect.width-thumb)*100);
-    const next=Math.max(0,Math.min(startValue+10,raw));
-    if(next!==Number(slider.value))showVolume(next);
+    const next=Math.max(0,Math.min(100,startValue+10,raw));
+    if(next!==Number(slider.value))onValue(next);
   });
   const end=event=>{if(pointerId===event.pointerId){pointerId=null;volumeDragging=false;}};
-  track.addEventListener('pointerup',end);track.addEventListener('pointercancel',end);
-  slider.addEventListener('input',()=>showVolume(Number(slider.value)));
+  for(const event of ['pointerup','pointercancel','lostpointercapture'])track.addEventListener(event,end);
+  slider.addEventListener('input',()=>onValue(Number(slider.value)));
 }
 function bindPlayer(prefix){
   $(prefix+'toggle-play').onclick=event=>{event.currentTarget.blur();control(currentStatus?.playing?'pause':'play');};
@@ -689,6 +771,7 @@ function bindPlayer(prefix){
   guardVolumeTrack($(prefix+'volume'));
   for(const [suffix,change] of [['down',-1],['up',1]]){$(prefix+`volume-${suffix}`).onclick=event=>{event.currentTarget.blur();showVolume(Number($(prefix+'volume').value)+change);};}
   $(prefix+'seek').addEventListener('pointerdown',()=>{seeking=true;});
+  for(const event of ['pointerup','pointercancel','lostpointercapture','blur'])$(prefix+'seek').addEventListener(event,()=>{seeking=false;});
   $(prefix+'seek').oninput=e=>{seeking=true;for(const p of ['','mini-']){$(p+'seek').value=e.target.value;paintRange($(p+'seek'));$(p+'position').textContent=duration(Number(e.target.value));}};
   $(prefix+'seek').onchange=async e=>{const value=Number(e.target.value);try{await control('seek',value);}finally{seeking=false;}};
 }
@@ -699,7 +782,8 @@ $('queue-shuffle').onclick=()=>control('shuffle',!currentStatus?.shuffle);
 $('queue-repeat-one').onclick=()=>control('repeatOne',!currentStatus?.repeatOne);
 $('queue-mute').onclick=()=>control('mute',!currentStatus?.mute);
 guardVolumeTrack($('queue-volume'));
-window.addEventListener('pointerup',()=>{volumeDragging=false;});
+window.addEventListener('pointerup',()=>{volumeDragging=false;seeking=false;});
+window.addEventListener('pointercancel',()=>{volumeDragging=false;seeking=false;});
 let mobilePlayerOpen=false,mobilePlayerClosing=false,mobilePlayerCloseTimer;
 function setMobilePlayer(open){
   const player=document.querySelector('.player');
@@ -738,7 +822,11 @@ function updateMiniVisibility(){
   const scrolled=mobile?window.scrollY>500:document.querySelector('.player').getBoundingClientRect().bottom<=0;
   $('mini-player').hidden=dialogOpen||mobilePlayerOpen||(!mobile&&!scrolled);
   $('floating-actions').hidden=dialogOpen||mobilePlayerOpen||!scrolled;
+  const searchBounds=$('catalog-search-open').getBoundingClientRect();
+  const searchVisible=searchBounds.width>0&&searchBounds.bottom>0&&searchBounds.top<window.innerHeight;
+  $('quick-search-open').hidden=mobile||searchVisible;
   document.querySelector('.mobile-nav').hidden=dialogOpen||mobilePlayerOpen;
+  $('mobile-dock').hidden=mobile&&(dialogOpen||mobilePlayerOpen);
 }
 $('mobile-library-open').onclick=()=>setMobilePlayer(false);
 $('mobile-player-back').onclick=()=>setMobilePlayer(false);
@@ -747,7 +835,7 @@ $('mobile-search-open').onclick=e=>openCatalogSearch(e);
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&mobilePlayerOpen&&!dialogIds.some(id=>$(id).open))setMobilePlayer(false);});
 function bindMobileSwipe(element,direction,action){
   let start=null,mouseStart=null;
-  const blocked=target=>Boolean(target.closest('button:not(#mobile-player-back):not(#mini-expand),input,textarea,select,dialog'));
+  const blocked=target=>Boolean(target.closest('button:not(#mobile-player-back):not(#mini-expand),input,textarea,select,dialog,.volume-slider,.safe-volume-track'));
   const move=(origin,x,y)=>{
     if(!origin||direction!=='down'||!mobilePlayerOpen||mobilePlayerClosing)return false;
     const dx=x-origin.x,dy=y-origin.y;
@@ -789,9 +877,27 @@ bindMobileSwipe($('mini-player'),'up',()=>setMobilePlayer(true));
 window.addEventListener('scroll',updateMiniVisibility,{passive:true});window.addEventListener('resize',updateMiniVisibility);
 $('login-dialog').addEventListener('close',updateMiniVisibility);
 updateMiniVisibility();
-$('search').oninput=()=>{locateGeneration++;visible=60;renderSongs();};$('refresh').onclick=async()=>{try{await loadCatalog(true);await loadPlaylist(true);}catch(e){toast(e.message);}};
+$('search').oninput=()=>{locateGeneration++;visible=60;renderSongs();};
+async function refreshLibrary(){
+  if($('refresh').disabled)return;
+  $('refresh').disabled=true;
+  try{if(!$('history-panel').hidden)await loadHistory();else{await loadCatalog(true);await loadPlaylist(true);}}
+  catch(error){toast(error.message);}
+  finally{$('refresh').disabled=false;}
+}
+$('refresh').onclick=refreshLibrary;
 $('qq-account').onchange=async e=>{const selector=e.currentTarget;selector.disabled=true;try{await api('/api/qq/session/select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:selector.value})});await checkSession();await loadCatalog(true);await loadPlaylist(true);if(!$('history-panel').hidden)await loadHistory();$('account-dialog').close();}catch(error){toast(error.message);await checkSession();}finally{selector.disabled=false;}};
-function openCatalogSearch(event){$('quick-search').value='';showDialog('quick-search-dialog',event);renderQuickResults();updateMiniVisibility();$('quick-search').focus({preventScroll:true});}
+function openCatalogSearch(event){
+  showDialog('quick-search-dialog',event);
+  if(!quickSearchInitialized)void renderQuickResults();
+  updateMiniVisibility();
+  if(!$('quick-search').value)$('quick-search').focus({preventScroll:true});
+}
+$('quick-search-clear').onclick=()=>{clearTimeout(quickSearchTimer);$('quick-search').value='';void renderQuickResults();$('quick-search').focus({preventScroll:true});};
+$('quick-search').addEventListener('keydown',event=>{
+  if(event.key!=='Enter')return;
+  event.preventDefault();clearTimeout(quickSearchTimer);void renderQuickResults();$('quick-search').blur();
+});
 $('quick-search-open').onclick=openCatalogSearch;
 $('catalog-search-open').onclick=openCatalogSearch;
 $('quick-search-close').onclick=()=>$('quick-search-dialog').close();
@@ -801,8 +907,10 @@ $('quick-search-dialog').addEventListener('close',updateMiniVisibility);
 $('quick-search').oninput=scheduleQuickSearch;
 $('quick-search-dialog').addEventListener('pointerdown',event=>{if(event.target.closest('.search-wrap,.dialog-head,.search-bottom-nav'))return;$('quick-search').blur();});
 $('back-to-top').onclick=()=>window.scrollTo({top:0,behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});
-$('utilities-open').onclick=event=>{showDialog('utilities-dialog',event);updateMiniVisibility();};
-$('queue-utilities-open').onclick=event=>{$('queue-dialog').close();showDialog('utilities-dialog',event);updateMiniVisibility();};
+let utilitiesReturnTo='';
+$('utilities-open').onclick=event=>{utilitiesReturnTo='';$('utilities-back').hidden=true;showDialog('utilities-dialog',event);updateMiniVisibility();};
+$('queue-utilities-open').onclick=event=>{utilitiesReturnTo='queue-dialog';$('utilities-back').hidden=false;$('queue-dialog').close();showDialog('utilities-dialog',event);updateMiniVisibility();};
+$('utilities-back').onclick=event=>{$('utilities-dialog').close();if(utilitiesReturnTo==='queue-dialog'){showDialog('queue-dialog',event);void loadQueue(queueStart);}updateMiniVisibility();};
 $('utilities-close').onclick=()=>$('utilities-dialog').close();
 $('utilities-dialog').addEventListener('close',updateMiniVisibility);
 $('repeat-all').onclick=()=>control('repeatAll',!currentStatus?.repeatAll);
@@ -810,19 +918,21 @@ $('crossfade').onclick=()=>control('crossfade',!currentStatus?.crossfade);
 $('song-action-close').onclick=()=>$('song-action-dialog').close();
 $('song-action-dialog').addEventListener('close',updateMiniVisibility);
 async function addChosenSong(placement){
-  const song=chosenSong;if(!song)return;
+  const room=roomGeneration,song=chosenSong;if(!song)return;
   const buttons=$('song-action-dialog').querySelectorAll('button');for(const button of buttons)button.disabled=true;
-  try{await api('/api/queue/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mid:song.mid,placement})});$('song-action-dialog').close();toast(`${song.title}已${placement==='next'?'加入下一首':'加入队列末尾'}`);if($('queue-dialog').open)await loadQueue(queueStart);}
+  try{await api('/api/queue/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mid:song.mid,placement})});if(room!==roomGeneration)return;$('song-action-dialog').close();toast(`${song.title}已${placement==='next'?'加入下一首':'加入队列末尾'}`);if($('queue-dialog').open)await loadQueue(queueStart);}
   catch(e){toast(e.message);}finally{for(const button of buttons)button.disabled=false;}
 }
 $('song-play-next').onclick=()=>addChosenSong('next');$('song-add-end').onclick=()=>addChosenSong('end');
-let queueLoading=false,queueStart=0;
+let queueLoading=false,queueStart=0,queueRequest=0;
 async function loadQueue(start=0,focusCurrent=false){
-  if(queueLoading)return;
+  const request=++queueRequest,room=roomGeneration;
+  chosenQueueTrack=null;$('queue-action-dialog').close();$('queue-list').replaceChildren();$('queue-browse').hidden=true;$('queue-list').setAttribute('aria-busy','true');
   queueLoading=true;$('queue-refresh').disabled=true;$('queue-more').disabled=true;$('queue-prev').disabled=true;
   $('queue-state').textContent='正在读取 Sonos 播放队列…';
   try{
     const data=await api(`/api/queue?start=${start}`);
+    if(request!==queueRequest||room!==roomGeneration)return;
     start=data.start;
     const fragment=document.createDocumentFragment();
     for(const track of data.tracks){
@@ -837,23 +947,24 @@ async function loadQueue(start=0,focusCurrent=false){
       info.append(title,artist);row.append(number,art,info);
       const more=document.createElement('button');more.type='button';more.className='queue-more-trigger';more.setAttribute('aria-label',`${track.title}的队列操作`);more.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>';
       more.onclick=e=>{chosenQueueTrack=track;$('queue-action-name').textContent=`${track.number}. ${track.title} · ${track.artist}`;$('queue-move-up').disabled=track.number<=1;$('queue-move-down').disabled=track.number>=queueTotal;showDialog('queue-action-dialog',e);updateMiniVisibility();};
-      row.onclick=async()=>{const playRequest=++playRequestGeneration;row.blur();row.disabled=true;let operation=null;try{await api('/api/queue/play',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({number:track.number,key:track.key})});if(playRequest!==playRequestGeneration)return;operation=beginTransportSync(true);await settleTransport(true,0,operation);if(!transportOperations.isCurrent(operation))return;markCurrentQueueTrack();}catch(e){if(playRequest===playRequestGeneration&&(!operation||transportOperations.isCurrent(operation))){expectedPlaying=null;transportExpectation=null;transportSettlingUntil=0;await updateStatus();toast(e.message);}}finally{row.disabled=false;}};
+      row.onclick=async()=>{if(room!==roomGeneration)return;const playRequest=++playRequestGeneration;row.blur();row.disabled=true;let operation=null;try{await api('/api/queue/play',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({number:track.number,key:track.key})});if(playRequest!==playRequestGeneration||room!==roomGeneration)return;operation=beginTransportSync(true);const confirmed=await settleTransport(true,0,operation);if(!transportOperations.isCurrent(operation))return;if(!confirmed)throw Error('Sonos 尚未确认播放，请刷新队列后重试。');markCurrentQueueTrack();}catch(e){if(playRequest===playRequestGeneration&&(!operation||transportOperations.isCurrent(operation))){expectedPlaying=null;transportExpectation=null;transportSettlingUntil=0;await updateStatus();toast(e.message);}}finally{row.disabled=false;}};
       entry.append(row,more);fragment.append(entry);
     }
-    $('queue-list').replaceChildren(fragment);queueStart=start;queueTotal=data.total;
+    $('queue-list').replaceChildren(fragment);$('queue-browse').hidden=Boolean(data.total);queueStart=start;queueTotal=data.total;
     $('queue-list').scrollTop=0;
     $('queue-state').textContent=data.total?`第 ${start+1}–${start+data.tracks.length} 首 / 共 ${data.total} 首`:'当前队列为空';
     $('queue-prev').hidden=start===0;
     $('queue-more').hidden=start+data.tracks.length>=data.total;
     markCurrentQueueTrack();
     if(focusCurrent){const list=$('queue-list'),current=list.querySelector('.queue-track.current');if(current)list.scrollTop=current.getBoundingClientRect().top-list.getBoundingClientRect().top+list.scrollTop-list.clientHeight/2;}
-  }catch(e){$('queue-state').textContent=e.message;toast(e.message);}
-  finally{queueLoading=false;$('queue-refresh').disabled=false;$('queue-more').disabled=false;$('queue-prev').disabled=false;}
+  }catch(e){if(request===queueRequest&&room===roomGeneration){$('queue-state').textContent=e.message;toast(e.message);}}
+  finally{if(request===queueRequest){$('queue-list').setAttribute('aria-busy','false');queueLoading=false;$('queue-refresh').disabled=false;$('queue-more').disabled=false;$('queue-prev').disabled=false;}}
 }
 function markCurrentQueueTrack(){
   for(const row of $('queue-list').querySelectorAll('.queue-track'))row.classList.toggle('current',Number(row.dataset.number)===currentStatus?.track);
 }
 $('queue-open').onclick=e=>{showDialog('queue-dialog',e);updateMiniVisibility();loadQueue(Math.floor((Math.max(1,currentStatus?.track||1)-1)/100)*100,true);};
+$('queue-browse').onclick=()=>{$('queue-dialog').close();setMobilePlayer(false);showLibraryView('playlist');requestAnimationFrame(()=>document.querySelector('.library').scrollIntoView({block:'start',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'}));};
 $('queue-close').onclick=()=>$('queue-dialog').close();
 $('queue-refresh').onclick=()=>loadQueue(queueStart);
 $('queue-prev').onclick=()=>loadQueue(Math.max(0,queueStart-100));
@@ -862,35 +973,59 @@ $('queue-dialog').addEventListener('close',updateMiniVisibility);
 $('queue-action-close').onclick=()=>$('queue-action-dialog').close();
 $('queue-action-dialog').addEventListener('close',updateMiniVisibility);
 async function editChosenQueue(action,before){
-  const track=chosenQueueTrack;if(!track)return;
+  const room=roomGeneration,track=chosenQueueTrack;if(!track)return;
   const buttons=$('queue-action-dialog').querySelectorAll('button');for(const button of buttons)button.disabled=true;
-  try{await api('/api/queue/edit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,number:track.number,key:track.key,before})});$('queue-action-dialog').close();await loadQueue(queueStart);await updateStatus();}
+  try{await api('/api/queue/edit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,number:track.number,key:track.key,before})});if(room!==roomGeneration)return;$('queue-action-dialog').close();await loadQueue(queueStart);await updateStatus();}
   catch(e){toast(e.message);}finally{for(const button of buttons)button.disabled=false;}
 }
 $('queue-move-up').onclick=()=>editChosenQueue('move',chosenQueueTrack.number-1);
 $('queue-move-down').onclick=()=>editChosenQueue('move',chosenQueueTrack.number+2);
 $('queue-remove').onclick=()=>editChosenQueue('remove');
+function selectRoom(id){
+  if(selectedRoomId===id)return;
+  selectedRoomId=id;roomGeneration++;statusRequest++;playRequestGeneration++;shuffleGeneration++;transportOperations.begin();
+  expectedPlaying=null;transportExpectation=null;transportSettlingUntil=0;pendingShuffleValue=null;pendingModes.clear();
+  volumeDesired=null;groupDesired=null;seeking=false;volumeDragging=false;
+  currentStatus=null;positionAnchor={seconds:0,at:Date.now(),playing:false};lyricTrack='';lyrics=[];
+  sleepRequest++;sleepWriteGeneration++;sleepSending=false;sleepEndsAt=null;renderSleep();$('sleep-feedback').hidden=true;$('sleep-form').setAttribute('aria-busy','false');
+  for(const button of $('sleep-dialog').querySelectorAll('#sleep-form button,#sleep-cancel'))button.disabled=false;
+  queueRequest++;queueLoading=false;chosenQueueTrack=null;$('queue-list').replaceChildren();$('queue-action-dialog').close();
+  $('connection').textContent='正在切换房间…';
+  try{localStorage.setItem('sonos-room-id',id);}catch{/* Storage is optional. */}
+}
+let roomsRequest=0;
 async function loadRooms(refresh=false){
+  const request=++roomsRequest;
   $('rooms-discover').disabled=true;
   $('rooms-state').textContent=refresh?'正在发现局域网内的 Sonos…':'正在读取房间…';
   try{
-    roomData=await api(`/api/rooms${refresh?'?refresh=1':''}`);
-    if(!roomData.rooms.some(room=>room.id===selectedRoomId)){selectedRoomId=roomData.defaultId;localStorage.setItem('sonos-room-id',selectedRoomId);}
+    const data=await api(`/api/rooms${refresh?'?refresh=1':''}`);
+    if(request!==roomsRequest)return;
+    roomData=data;
+    if(!roomData.rooms.some(room=>room.id===selectedRoomId))selectRoom(roomData.defaultId);
     const selected=roomData.rooms.find(room=>room.id===selectedRoomId),fragment=document.createDocumentFragment();
     for(const room of roomData.rooms){
       const entry=document.createElement('div');entry.className='room-entry';
       const header=document.createElement('div');header.className='room-row';
       const name=document.createElement('strong');name.textContent=room.name;
       const button=document.createElement('button');button.type='button';button.textContent=room.id===selectedRoomId?'当前房间':'切换到这里';button.disabled=room.id===selectedRoomId;
-      button.onclick=async()=>{selectedRoomId=room.id;localStorage.setItem('sonos-room-id',room.id);await updateStatus();await loadSleep();await loadRooms();};
+      button.onclick=async()=>{selectRoom(room.id);await Promise.all([updateStatus(),loadSleep(),loadRooms()]);};
       header.append(name,button);entry.append(header);
       const group=document.createElement('small');group.textContent=room.id===selected.id?'当前控制房间':room.groupId===selected.groupId?`与 ${selected.name} 同组`:'独立播放';entry.append(group);
       if(room.volume!=null){
         const label=document.createElement('label');label.textContent=`${room.name}音量 ${room.volume}%`;
         const slider=document.createElement('input');slider.type='range';slider.min='0';slider.max='100';slider.value=room.volume;slider.setAttribute('aria-label',`${room.name}音量`);
-        slider.oninput=()=>{label.textContent=`${room.name}音量 ${slider.value}%`;};
-        slider.onchange=async()=>{try{await api(`/api/control?room=${encodeURIComponent(room.id)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'volume',value:Number(slider.value)})});await updateStatus();}catch(e){toast(e.message);}};
-        entry.append(label,slider);
+        const track=document.createElement('span');track.className='safe-volume-track';track.append(slider);paintRange(slider);
+        const generation=roomGeneration;
+        let desired=null,sending=false;
+        const send=async()=>{
+          if(sending)return;sending=true;
+          try{while(desired!==null){const value=desired;desired=null;if(generation!==roomGeneration)break;await api(`/api/control?room=${encodeURIComponent(room.id)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'volume',value})});}}
+          catch(error){desired=null;if(generation===roomGeneration)toast(error.message);}
+          finally{sending=false;void updateStatus();}
+        };
+        guardVolumeTrack(slider,value=>{if(generation!==roomGeneration)return;slider.value=value;paintRange(slider);label.textContent=`${room.name}音量 ${value}%`;desired=value;void send();});
+        entry.append(label,track);
       }
       if(room.groupId!==selected.groupId){
         const join=document.createElement('button');join.type='button';join.className='room-group-action';join.textContent=`让 ${room.name} 加入当前分组`;
@@ -905,25 +1040,31 @@ async function loadRooms(refresh=false){
     const count=roomData.rooms.filter(room=>room.groupId===selected.groupId).length;
     $('rooms-state').textContent=roomData.rooms.length===1?'目前只发现一个房间。':`发现 ${roomData.rooms.length} 个房间 · 当前分组 ${count} 个房间`;
     $('group-controls').hidden=count<2;
-  }catch(e){$('rooms-state').textContent=e.message;toast(e.message);}
-  finally{$('rooms-discover').disabled=false;}
+  }catch(e){if(request===roomsRequest){$('rooms-state').textContent=e.message;toast(e.message);}}
+  finally{if(request===roomsRequest)$('rooms-discover').disabled=false;}
 }
 async function changeGroup(input){
   try{await api('/api/rooms/group',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(input)});await loadRooms();await updateStatus();}
   catch(e){toast(e.message);}
 }
-$('rooms-open').onclick=e=>{$('utilities-dialog').close();showDialog('rooms-dialog',e);updateMiniVisibility();loadRooms();};
+$('rooms-open').onclick=e=>{$('rooms-back').hidden=false;$('utilities-dialog').close();showDialog('rooms-dialog',e);updateMiniVisibility();loadRooms();};
 $('rooms-discover').onclick=async()=>{await loadRooms(true);await updateStatus();await loadSleep();};
+$('rooms-back').onclick=e=>{$('rooms-dialog').close();showDialog('utilities-dialog',e);updateMiniVisibility();};
+$('connection').onclick=e=>{$('rooms-back').hidden=true;showDialog('rooms-dialog',e);updateMiniVisibility();void loadRooms();};
 $('rooms-close').onclick=()=>$('rooms-dialog').close();
 $('rooms-dialog').addEventListener('close',updateMiniVisibility);
 let groupDesired=null,groupSending=false;
 async function sendGroupVolume(){
   if(groupSending)return;groupSending=true;
-  try{while(groupDesired!==null){const value=groupDesired;groupDesired=null;await api('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'groupVolume',value})});}}
-  catch(e){groupDesired=null;toast(e.message);}finally{groupSending=false;await updateStatus();}
+  try{while(groupDesired!==null){const pending=groupDesired;groupDesired=null;if(pending.generation!==roomGeneration)continue;try{await api(`/api/control?room=${encodeURIComponent(pending.room)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'groupVolume',value:pending.value})});}catch(error){if(pending.generation===roomGeneration)toast(error.message);}}}
+  finally{groupSending=false;await updateStatus();}
 }
-$('group-volume').oninput=e=>{$('group-volume-value').textContent=`${e.target.value}%`;groupDesired=Number(e.target.value);sendGroupVolume();};
-let sleepEndsAt=null;
+guardVolumeTrack($('group-volume'),value=>{
+  if(!currentStatus||currentStatus.groupSize<2)return;
+  $('group-volume').value=value;paintRange($('group-volume'));$('group-volume-value').textContent=`${value}%`;
+  groupDesired={value,room:selectedRoomId,generation:roomGeneration};void sendGroupVolume();
+});
+let sleepEndsAt=null,sleepRequest=0,sleepSending=false,sleepWriteGeneration=0;
 function renderSleep(){
   const remaining=sleepEndsAt?Math.max(0,Math.ceil((sleepEndsAt-Date.now())/1000)):0;
   if(!remaining)sleepEndsAt=null;
@@ -934,24 +1075,36 @@ function renderSleep(){
   $('sleep-badge').hidden=!remaining;$('sleep-cancel').hidden=!remaining;
 }
 async function loadSleep(){
+  if(sleepSending)return;
+  const request=++sleepRequest,room=roomGeneration;
   $('sleep-state').textContent='正在读取定时状态…';
-  try{const data=await api('/api/sleep');sleepEndsAt=data.endsAt?Date.parse(data.endsAt):null;renderSleep();}
-  catch(e){$('sleep-state').textContent=e.message;toast(e.message);}
+  try{const data=await api('/api/sleep');if(request!==sleepRequest||room!==roomGeneration)return;sleepEndsAt=data.endsAt?Date.parse(data.endsAt):null;renderSleep();}
+  catch(e){if(request===sleepRequest&&room===roomGeneration){$('sleep-state').textContent=e.message;toast(e.message);}}
 }
 async function setSleep(input){
-  const buttons=$('sleep-dialog').querySelectorAll('button');for(const button of buttons)button.disabled=true;
-  try{const data=await api('/api/sleep',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(input)});sleepEndsAt=data.endsAt?Date.parse(data.endsAt):null;renderSleep();}
-  catch(e){toast(e.message);}
-  finally{for(const button of buttons)button.disabled=false;}
+  if(sleepSending)return;
+  sleepSending=true;
+  const write=++sleepWriteGeneration,request=++sleepRequest,room=roomGeneration;
+  const buttons=$('sleep-dialog').querySelectorAll('#sleep-form button,#sleep-cancel');for(const button of buttons)button.disabled=true;
+  $('sleep-form').setAttribute('aria-busy','true');$('sleep-feedback').hidden=true;
+  try{const data=await api('/api/sleep',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(input)});if(request!==sleepRequest||room!==roomGeneration)return;sleepEndsAt=data.endsAt?Date.parse(data.endsAt):null;renderSleep();$('sleep-feedback').textContent=input.mode==='cancel'?'已取消睡眠定时':'已设置，关闭网页后仍会按时停止';$('sleep-feedback').classList.remove('error');$('sleep-feedback').hidden=false;}
+  catch(e){if(room===roomGeneration){$('sleep-feedback').textContent=`设置失败：${e.message}`;$('sleep-feedback').classList.add('error');$('sleep-feedback').hidden=false;}}
+  finally{if(write===sleepWriteGeneration){sleepSending=false;$('sleep-form').setAttribute('aria-busy','false');for(const button of buttons)button.disabled=false;}}
 }
-$('sleep-open').onclick=e=>{$('utilities-dialog').close();showDialog('sleep-dialog',e);updateMiniVisibility();loadSleep();};
+$('sleep-open').onclick=e=>{$('sleep-feedback').hidden=true;$('utilities-dialog').close();showDialog('sleep-dialog',e);updateMiniVisibility();loadSleep();};
+$('sleep-back').onclick=e=>{$('sleep-dialog').close();showDialog('utilities-dialog',e);updateMiniVisibility();};
+for(const button of document.querySelectorAll('[data-sleep-minutes]'))button.onclick=()=>{const minutes=Number(button.dataset.sleepMinutes);$('sleep-minutes').value=String(minutes);void setSleep({mode:'minutes',minutes});};
 $('sleep-close').onclick=()=>$('sleep-dialog').close();
 $('sleep-dialog').addEventListener('close',updateMiniVisibility);
 $('sleep-form').noValidate=true;
 $('sleep-time').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();document.querySelector('#sleep-form button[value="until"]').click();}});
 $('sleep-form').onsubmit=e=>{
   e.preventDefault();
-  if(e.submitter?.value==='minutes')return setSleep({mode:'minutes',minutes:Number($('sleep-minutes').value)});
+  if(e.submitter?.value==='minutes'||!e.submitter&&document.activeElement===$('sleep-minutes')){
+    const minutes=Number($('sleep-minutes').value);
+    if(!Number.isInteger(minutes)||minutes<1||minutes>1440){toast('请输入 1 到 1440 分钟。');return;}
+    return setSleep({mode:'minutes',minutes});
+  }
   const value=$('sleep-time').value;
   if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(value)){toast('请选择停止时间');return;}
   const [hours,minutes]=value.split(':').map(Number),target=new Date();

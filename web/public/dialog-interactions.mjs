@@ -18,3 +18,11 @@ export function bindBackdropDismiss(dialog){
     if(dismiss)dialog.close();
   });
 }
+
+// Do not move a form away from the pointer as an input loses focus on submit.
+export function bindDialogEditing(dialog){
+  dialog.addEventListener('focusin',event=>{
+    if(event.target.matches('input,textarea,select'))dialog.classList.add('dialog-editing');
+  });
+  dialog.addEventListener('close',()=>dialog.classList.remove('dialog-editing'));
+}

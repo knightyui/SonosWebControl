@@ -1,1 +1,1 @@
-{"name":"sonos-qq-web","private":true,"type":"module","scripts":{"start":"node server.mjs","test":"node --test"},"engines":{"node":">=20"}}
+{"name":"sonos-qq-web","private":true,"type":"module","scripts":{"start":"node server.mjs","test":"node --test","test:ui":"node scripts/verify-ui.cjs"},"engines":{"node":">=20"}}

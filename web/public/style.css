@@ -882,7 +882,7 @@ body:has(#queue-dialog[open]) .player-utilities #queue-open{background:#fff;colo
   dialog.playlist-dialog[open]{top:calc(var(--visual-top,0px) + 18px);bottom:auto;display:flex;height:calc(var(--visual-height,100dvh) - 18px);max-height:calc(var(--visual-height,100dvh) - 18px);overflow:hidden}
   dialog.playlist-dialog .playlist-filter-wrap{margin-top:5px}
   dialog.playlist-dialog .playlist-list{flex:1;min-height:0;padding-bottom:env(safe-area-inset-bottom)}
-  dialog.account-dialog[open]:has(input:focus),dialog.sleep-dialog[open]:has(input:focus),dialog#login-dialog[open]:has(textarea:focus){top:calc(var(--visual-top,0px) + 8px);bottom:auto;max-height:calc(var(--visual-height,100dvh) - 8px)}
+  dialog.account-dialog[open].dialog-editing,dialog.sleep-dialog[open].dialog-editing,dialog#login-dialog[open].dialog-editing{top:calc(var(--visual-top,0px) + 8px);bottom:auto;max-height:calc(var(--visual-height,100dvh) - 8px)}
   dialog.account-dialog[open].sheet-dragging,dialog.playlist-dialog[open].sheet-dragging,dialog.sleep-dialog[open].sheet-dragging,dialog.rooms-dialog[open].sheet-dragging,dialog.action-dialog[open].sheet-dragging,dialog#login-dialog[open].sheet-dragging{animation:none!important;transform:translate3d(0,var(--sheet-offset,0px),0);transition:none!important}
   dialog.account-dialog[open].sheet-settling,dialog.playlist-dialog[open].sheet-settling,dialog.sleep-dialog[open].sheet-settling,dialog.rooms-dialog[open].sheet-settling,dialog.action-dialog[open].sheet-settling,dialog#login-dialog[open].sheet-settling{animation:none!important;transform:translate3d(0,0,0);transition:transform .28s cubic-bezier(.2,.8,.2,1)!important}
   dialog.account-dialog[open].sheet-dismissing,dialog.playlist-dialog[open].sheet-dismissing,dialog.sleep-dialog[open].sheet-dismissing,dialog.rooms-dialog[open].sheet-dismissing,dialog.action-dialog[open].sheet-dismissing,dialog#login-dialog[open].sheet-dismissing{animation:none!important;transform:translate3d(0,105%,0);transition:transform .25s cubic-bezier(.3,.75,.45,1)!important}
@@ -914,3 +914,16 @@ body:has(#queue-dialog[open]) .player-utilities #queue-open{background:#fff;colo
   .mobile-nav button{font-size:.8125rem}
   .mini-player .mini-progress{font-size:.75rem}
 }
+
+/* Use the same deliberate drag interaction for room and group volume. */
+.safe-volume-track{display:flex;align-items:center;width:100%;height:44px;touch-action:none}
+.safe-volume-track input[type=range]{width:100%;height:44px;margin:0;pointer-events:none}
+
+/* Queue and full player share transport silhouettes and slider materials. */
+.queue-transport #queue-previous svg,.queue-transport #queue-next svg,.queue-transport #queue-toggle-play svg{fill:currentColor;stroke:none}
+.queue-transport #queue-shuffle svg,.queue-transport #queue-repeat-one svg{fill:none;stroke:currentColor;stroke-width:2}
+.safe-volume-track input[type=range]{appearance:none;-webkit-appearance:none;background:transparent}
+.safe-volume-track input[type=range]::-webkit-slider-runnable-track{height:5px;border-radius:99px;background:linear-gradient(to right,#fff 0 var(--range-fill,0%),#ffffff38 var(--range-fill,0%) 100%)}
+.safe-volume-track input[type=range]::-moz-range-track{height:5px;border-radius:99px;background:linear-gradient(to right,#fff 0 var(--range-fill,0%),#ffffff38 var(--range-fill,0%) 100%)}
+.safe-volume-track input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:12px;height:12px;margin-top:-3.5px;border:0;border-radius:50%;background:#fff}
+.safe-volume-track input[type=range]::-moz-range-thumb{width:12px;height:12px;border:0;border-radius:50%;background:#fff}
