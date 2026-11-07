@@ -32,7 +32,7 @@ test('catalog pagination and current-song navigation are wired to the page',asyn
   ]);
   assert.match(html,/id="quick-search-more"/);
   assert.match(html,/id="locate-playing"/);
-  assert.match(script,/page=\$\{quickSearchPage\+1\}/);
+  assert.match(script,/page=\$\{page\}/);
   assert.match(script,/\$\('locate-playing'\)\.onclick=locatePlayingSong/);
   assert.match(server,/'library-navigation\.mjs'/);
 });

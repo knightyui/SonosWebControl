@@ -27,6 +27,7 @@ function harness(){
     setTimeout:()=>1,clearTimeout(){},setInterval:()=>1,requestAnimationFrame:fn=>fn(),
     matchMedia:()=>({matches:true}),window:{addEventListener(){}},document:{activeElement:null},
     localStorage:{getItem:()=>null,setItem(){}},$:element,roomGeneration:0,selectedRoomId:'A',
+    songActionGeneration:0,queueActionGeneration:0,lastStatusAt:0,statusFailed:false,renderConnectionFeedback(){},updateProgress(){},quickSearchComposing:false,quickSearchMoreFailed:false,libraryViewActive:()=>true,restoreLibraryView(){},libraryPlaylistId:'liked',libraryRestore:null,restoringLibrary:false,rememberLibraryView(){},libraryViews:{read:()=>null},
     statusInFlight:null,pendingModes:new Map(),modeGeneration:0,livePosition:()=>0,statusRequest:0,playRequestGeneration:0,shuffleGeneration:0,pendingShuffleValue:null,
     expectedPlaying:null,transportExpectation:null,transportSettlingUntil:0,transportOperations:createOperationTracker(),
     currentStatus:{playing:false},positionAnchor:{},lyricTrack:'',lyrics:[],volumeDesired:null,volumeSending:false,
@@ -383,4 +384,137 @@ test('unloaded and empty playlists have different guidance',()=>{
   c.renderSongs();assert.equal(element('list-state').textContent,'正在加载歌单…');
   c.displayedPlaylistId='empty';c.renderSongs();assert.match(element('list-state').textContent,/没有歌曲.*切换其他歌单/);
   c.libraryAccount='';c.renderSongs();assert.match(element('list-state').textContent,/登录 QQ 音乐/);
+});
+
+test('Chinese composition invalidates old searches without starting a partial query',()=>{
+  const {context:c,install}=harness();let scheduled=0;
+  Object.assign(c,{quickSearchRequest:4,quickSearchTimer:1,quickSearchComposing:true,renderQuickResults(){},setTimeout(){scheduled++;}});
+  install('function scheduleQuickSearch(', "$('quick-search-more').onclick");
+  c.scheduleQuickSearch();assert.equal(c.quickSearchRequest,5);assert.equal(scheduled,0);
+  c.quickSearchComposing=false;c.scheduleQuickSearch();assert.equal(scheduled,1);
+});
+test('progress extrapolation stops when no fresh status has arrived for fifteen seconds',()=>{
+  const {context:c,install}=harness();
+  Object.assign(c,{currentStatus:{duration:'4:00'},positionAnchor:{seconds:20,at:1000,playing:true},lastStatusAt:1000,Date:{now:()=>31000},timecode:()=>240});
+  install('function livePosition(', 'function renderOptimisticTransport(');
+  assert.equal(c.livePosition(),35);
+});
+test('connection feedback distinguishes optimistic confirmation, stale state and disconnection',()=>{
+  const {context:c,element,install}=harness();
+  Object.assign(c,{currentStatus:{room:'Demo'},lastStatusAt:1000,Date:{now:()=>2000}});
+  install('function renderConnectionFeedback(', 'function updateProgress(');
+  c.expectedPlaying=true;c.renderConnectionFeedback();assert.match(element('player-room-name').textContent,/正在确认/);
+  c.expectedPlaying=null;c.renderConnectionFeedback();assert.match(element('connection').textContent,/已连接/);
+  c.Date.now=()=>20000;c.renderConnectionFeedback();assert.match(element('queue-room-name').textContent,/正在重连/);
+  c.statusFailed=true;c.renderConnectionFeedback();assert.match(element('connection').textContent,/连接中断/);
+});
+test('browse restoration batches large lists and cancels before changing scroll after user input',()=>{
+  const {context:c,install}=harness(),frames=[],scrolls=[];
+  Object.assign(c,{locateGeneration:1,filtered:Array(1000),visible:60,restoringLibrary:false,requestAnimationFrame:fn=>frames.push(fn),renderSongs(){},window:{scrollTo:options=>scrolls.push(options)}});
+  install('function restoreLibraryView(', 'function displayPlaylist(');
+  c.restoreLibraryView({visible:780,top:2500});frames.shift()();assert.equal(c.visible,300);
+  c.locateGeneration++;while(frames.length)frames.shift()();assert.equal(scrolls.length,0);
+  c.restoreLibraryView({visible:780,top:2500});while(frames.length)frames.shift()();assert.equal(c.visible,780);assert.equal(scrolls[0].top,2500);
+});
+
+test('a search reply for the previous account cannot populate the new account view',async()=>{
+  const {context:c,element,install}=harness(),reply=deferred();
+  Object.assign(c,{quickSearchRequest:0,quickSearchInitialized:false,quickSearchPage:0,quickSearchLoading:false,
+    queryCache:{load:()=>reply.promise},appendQuickResults(){throw Error('stale result was rendered');}});
+  element('quick-search').value='Example';
+  install('async function renderQuickResults(', 'async function loadMoreQuickResults(');
+  const pending=c.renderQuickResults();c.libraryAccount='b';reply.resolve({songs:[{title:'Old account result'}]});await pending;
+  assert.equal(c.quickSearchPage,0);
+});
+
+test('an obsolete browse restoration cannot release a newer restoration guard',()=>{
+  const {context:c,install}=harness(),frames=[];
+  Object.assign(c,{locateGeneration:1,filtered:Array(1000),visible:60,restoringLibrary:false,requestAnimationFrame:fn=>frames.push(fn),renderSongs(){},window:{scrollTo(){}}});
+  install('function restoreLibraryView(', 'function displayPlaylist(');
+  c.restoreLibraryView({visible:780,top:2500});c.locateGeneration++;
+  c.restoreLibraryView({visible:300,top:1000});const latest=c.restoringLibrary;
+  frames.shift()();assert.equal(c.restoringLibrary,latest);
+  while(frames.length)frames.shift()();assert.equal(c.restoringLibrary,false);
+});
+
+test('a failed status read freezes the last estimated position and immediately repaints progress',async()=>{
+  const {context:c,install}=harness();let updates=0;
+  Object.assign(c,{livePosition:()=>42,updateProgress(){updates++;},api:async()=>{throw Error('offline');}});
+  install('async function updateStatus(', 'async function settleTransport(');
+  await c.updateStatus();assert.equal(c.positionAnchor.seconds,42);assert.equal(c.positionAnchor.playing,false);assert.equal(c.statusFailed,true);assert.equal(updates,1);
+});
+
+test('a stale room import poll cannot block a new room or render its late error',async()=>{
+  const {context:c,install}=harness(),old=deferred(),fresh=deferred(),jobs=[];let calls=0;
+  Object.assign(c,{queueImportPolling:false,document:{hidden:false},renderQueueImport:job=>jobs.push(job),api:()=>++calls===1?old.promise:fresh.promise});
+  install('async function pollQueueImport(', 'function createSongRow(');
+  const a=c.pollQueueImport();c.roomGeneration++;const b=c.pollQueueImport();
+  assert.equal(calls,2);fresh.resolve({import:{phase:'building',added:1}});await b;
+  old.resolve({import:{phase:'error',error:'Previous room error'}});await a;
+  assert.deepEqual(jobs,[{phase:'building',added:1}]);
+});
+test('restoring a hidden playlist defers scrolling until its content is visible',()=>{
+  const {context:c,install}=harness(),frames=[],scrolls=[];
+  Object.assign(c,{libraryViewActive:()=>false,libraryRestore:null,locateGeneration:1,filtered:Array(600),visible:60,requestAnimationFrame:fn=>frames.push(fn),renderSongs(){},window:{scrollTo:options=>scrolls.push(options)}});
+  install('function restoreLibraryView(', 'function displayPlaylist(');
+  const view={query:'live',visible:300,top:2000};c.restoreLibraryView(view);
+  while(frames.length)frames.shift()();assert.equal(scrolls.length,0);assert.equal(c.libraryRestore.top,2000);
+  c.libraryViewActive=()=>true;c.restoreLibraryView(c.libraryRestore);
+  while(frames.length)frames.shift()();assert.equal(scrolls[0].top,2000);
+});
+
+for(const action of ['song','queue']){
+  test(`${action} action failure from a previous room cannot toast or unlock a newer menu`,async()=>{
+    const {context:c,element,install}=harness(),gate=deferred(),button=element('action-button');
+    const dialog=element(action==='song'?'song-action-dialog':'queue-action-dialog');dialog.querySelectorAll=()=>[button];
+    Object.assign(c,{chosenSong:{mid:'demo',title:'Demo'},chosenQueueTrack:{number:1,key:'demo'},api:()=>gate.promise});
+    if(action==='song')install('async function addChosenSong(', "$('song-play-next').onclick");
+    else install('async function editChosenQueue(', "$('queue-move-up').onclick");
+    const pending=action==='song'?c.addChosenSong('end'):c.editChosenQueue('remove');
+    assert.equal(button.disabled,true);c.roomGeneration++;c[action+'ActionGeneration']++;
+    gate.reject(Error('old request failed'));await pending;
+    assert.equal(c.toasts.length,0);assert.equal(button.disabled,true);assert.equal(dialog.open,true);
+  });
+  test(`${action} action success cannot close a menu reopened for another item`,async()=>{
+    const {context:c,element,install}=harness(),gate=deferred();
+    const dialog=element(action==='song'?'song-action-dialog':'queue-action-dialog');
+    Object.assign(c,{chosenSong:{mid:'demo',title:'Demo'},chosenQueueTrack:{number:1,key:'demo'},api:()=>gate.promise});
+    if(action==='song')install('async function addChosenSong(', "$('song-play-next').onclick");
+    else install('async function editChosenQueue(', "$('queue-move-up').onclick");
+    const pending=action==='song'?c.addChosenSong('end'):c.editChosenQueue('remove');
+    c[action+'ActionGeneration']++;gate.resolve({});await pending;
+    assert.equal(dialog.open,true);assert.equal(c.toasts.length,0);
+  });
+}
+test('search failure exposes retry and a successful retry releases busy state',async()=>{
+  const {context:c,element,install}=harness();let calls=0,appended=0;const attributes={};
+  Object.assign(c,{quickSearchRequest:0,quickSearchMoreFailed:false,queryCache:{load:async()=>{if(++calls===1)throw Error('offline');return {songs:[{title:'Demo'}],hasMore:false};}},appendQuickResults(songs){appended+=songs.length;}});
+  element('quick-search').value='Demo';element('quick-search-results').setAttribute=(key,value)=>attributes[key]=value;
+  install('async function renderQuickResults(', 'async function loadMoreQuickResults(');
+  await c.renderQuickResults();assert.equal(element('quick-search-retry').hidden,false);assert.equal(attributes['aria-busy'],'false');
+  await c.renderQuickResults();assert.equal(element('quick-search-retry').hidden,true);assert.equal(appended,1);assert.equal(attributes['aria-busy'],'false');
+});
+test('pagination failure preserves the page and retries the same next page exactly once',async()=>{
+  const {context:c,element,install}=harness(),pages=[];let fail=true,appended=0;
+  Object.assign(c,{quickSearchRequest:2,quickSearchPage:1,quickSearchLoading:false,queryCache:{load:async(account,query,page)=>{pages.push(page);if(fail)throw Error('offline');return {songs:[1,2],page,hasMore:false};}},appendQuickResults(songs){appended+=songs.length;}});
+  element('quick-search').value='Demo';element('quick-search-results').querySelectorAll=()=>Array(6);
+  install('async function loadMoreQuickResults(', 'function scheduleQuickSearch(');
+  await c.loadMoreQuickResults();assert.equal(c.quickSearchPage,1);assert.equal(appended,0);assert.equal(element('quick-search-more').textContent,'重试加载更多');
+  fail=false;await c.loadMoreQuickResults();assert.deepEqual(pages,[2,2]);assert.equal(c.quickSearchPage,2);assert.equal(appended,2);
+});
+
+test('repeated initial connection failures do not produce a toast on every poll',async()=>{
+  const {context:c,install}=harness();
+  Object.assign(c,{currentStatus:null,api:async()=>{throw Error('offline');}});
+  install('async function updateStatus(', 'async function settleTransport(');
+  await c.updateStatus();await c.updateStatus();await c.updateStatus();
+  assert.equal(c.statusFailed,true);assert.deepEqual(c.toasts,['offline']);
+});
+test('an old import completion cannot release the new room single-flight guard',async()=>{
+  const {context:c,install}=harness(),old=deferred(),fresh=deferred();let calls=0;
+  Object.assign(c,{queueImportPolling:false,document:{hidden:false},renderQueueImport(){},api:()=>++calls===1?old.promise:fresh.promise});
+  install('async function pollQueueImport(', 'function createSongRow(');
+  const a=c.pollQueueImport();c.roomGeneration++;const b=c.pollQueueImport();
+  old.resolve({import:null});await a;await c.pollQueueImport();assert.equal(calls,2);
+  fresh.resolve({import:null});await b;assert.equal(c.queueImportPolling,false);
 });

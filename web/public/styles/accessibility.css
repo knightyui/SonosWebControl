@@ -1,0 +1,115 @@
+/* accessibility */
+
+@media (prefers-contrast:more) {
+  :root {
+    --hairline: #ffffff3a;
+    --card-edge: #ffffff5a;
+  }
+}
+
+@media (hover:hover) {
+  .song:active,
+  .catalog-search-button:hover,
+  .account-login:hover {
+    background: var(--border);
+  }
+  button:not(:disabled):active {
+    opacity: .86;
+  }
+  .connection:hover,
+  .head-actions .refresh:hover {
+    background: #ffffff10;
+  }
+  .sheet-control:hover {
+    background: #ffffff0c;
+    color: var(--text-primary);
+  }
+}
+
+@media (prefers-reduced-transparency:reduce),(prefers-contrast:more) {
+  .mobile-dock,
+  .mini-player,
+  .mobile-nav,
+  .search-bottom-nav,
+  .floating-actions button,
+  dialog[open],
+  dialog.utilities-dialog[open],
+  .controls {
+    background: #172127;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    border-color: #9aadb8;
+    box-shadow: inset 0 1px 0 #ffffff25,0 10px 28px #0004;
+  }
+  .mobile-dock::before,
+  .mobile-dock::after,
+  .controls::after,
+  .search-bottom-nav::after {
+    display: none;
+  }
+  dialog[open]::backdrop {
+    background: #000b;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .song-sub,
+  .list-state,
+  .utility-copy small,
+  .queue-info small {
+    color: #e0e9ee;
+  }
+}
+
+@media (prefers-reduced-motion:reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+  dialog[open].sheet-settling,
+  dialog[open].sheet-dismissing {
+    transition: none !important;
+  }
+}
+
+@media (hover:none),(pointer:coarse) {
+  .song:hover {
+    outline: none;
+  }
+  .song:focus,
+  .song:active,
+  .queue-track:focus:not(.current),
+  .queue-track:focus-visible:not(.current),
+  .song:focus-visible {
+    background: transparent;
+    outline: none;
+  }
+  .queue-track:focus-visible {
+    outline: none;
+  }
+  .controls .icon-button:not(.active),
+  .mini-controls .icon-button:not(.mute-button):not(.active),
+  #mute.icon-button:not(.active),
+  #mini-mute.icon-button:not(.active) {
+    background: transparent;
+    color: var(--text-primary);
+  }
+  .queue-track:hover:not(.current) {
+    outline: none;
+    background: transparent;
+  }
+  .queue-transport button:hover:not(.active) {
+    background: transparent;
+  }
+  .connection:hover,
+  .head-actions .refresh:hover {
+    background: #ffffff08;
+  }
+  .song:hover:not(.loading),
+  .playlist-choice:hover:not(.selected),
+  .utility-action:hover:not(:active) {
+    background: transparent;
+  }
+}

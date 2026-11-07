@@ -1,0 +1,91 @@
+/* tokens */
+
+@property --page-bg {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #181f21;
+}
+
+@property --page-glow {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #2b393b;
+}
+
+@property --surface {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #222b2d;
+}
+
+@property --surface-deep {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #1b2325;
+}
+
+@property --surface-raised {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #2b3638;
+}
+
+@property --accent {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #a8c9c5;
+}
+
+:root {
+  --font-system: Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  color-scheme: dark;
+  font-family: var(--font-system);
+  color: #f3f4f7;
+  --page-bg: #181f21;
+  --page-glow: #2b393b;
+  --surface: #222b2d;
+  --surface-deep: #1b2325;
+  --surface-raised: #2b3638;
+  --border: #415052;
+  --accent: #a8c9c5;
+  --control-bg: #ffffff12;
+  --control-hover: #ffffff24;
+  background: var(--page-bg);
+  --hairline: #ffffff1c;
+  --card-edge: #ffffff1a;
+  --sonos-line: #ffffff20;
+  --sonos-soft: #ffffff12;
+  --sonos-strong: #ffffff24;
+  transition: --page-bg .55s ease,--page-glow .55s ease,--surface .55s ease,--surface-deep .55s ease,--surface-raised .55s ease,--accent .55s ease;
+  --dock-safe-bottom: env(safe-area-inset-bottom,0px);
+  --glass-fill: color-mix(in srgb,var(--surface-deep) 64%,transparent);
+  --glass-edge: rgba(255,255,255,.12);
+  --glass-shine: rgba(255,255,255,.25);
+  --glass-shadow: 0 14px 40px #0005,inset 0 1px 0 var(--glass-shine),inset 0 -1px 0 #ffffff08;
+  --glass-blur: blur(32px) saturate(155%);
+  --text-primary: #f7f8fa;
+  --text-secondary: #c4cbce;
+  --text-tertiary: #aeb9be;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --control-hit: 44px;
+  --control-primary: 56px;
+  --radius-field: 13px;
+  --radius-card: 16px;
+  --radius-sheet: 30px;
+  --radius-pill: 999px;
+  --type-caption: 12px;
+  --type-label: 13px;
+  --type-body: 16px;
+  --motion-fast: .2s;
+  --motion-sheet: .32s;
+  --material-dock: color-mix(in srgb,var(--surface-deep) 88%,transparent);
+  --material-sheet: color-mix(in srgb,var(--surface-deep) 96%,transparent);
+  --material-reading: var(--surface-deep);
+  --artwork-mini: 44px;
+}

@@ -49,11 +49,12 @@ async function harness(){
   const elements=new Map();
   const element=id=>{
     if(!elements.has(id))elements.set(id,{value:'',textContent:'',hidden:true,disabled:false,options:[],
-      add(option){this.options.push(option);},replaceChildren(){this.options=[];},querySelectorAll:()=>[]});
+      add(option){this.options.push(option);},replaceChildren(){this.options=[];},setAttribute(){},querySelectorAll:()=>[]});
     return elements.get(id);
   };
   const context=vm.createContext({$:element,Option:function(text,value){return {text,value};},
     songs:[],visible:60,libraryAccount:'a',libraryPlaylistId:'liked',libraryReady:true,playlistRequest:0,
+    window:{scrollY:0},libraryViewActive:()=>true,libraryRestore:null,libraryViews:{read:()=>null},rememberLibraryView(){},restoreLibraryView(){},quickSearchRequest:0,quickSearchTimer:null,clearTimeout(){},quickSearchInitialized:false,quickSearchPage:0,quickSearchLoading:false,
     displayedPlaylistId:'',locateGeneration:0,playlistOptions:[],renderCount:0,toasts:[],
     renderSongs(){context.renderCount++;},markCurrentPlaylistSong(){},renderPlaylistChoices(){},
     toast(message){context.toasts.push(message);},playlistCache:createPlaylistCache(memoryStorage())});
@@ -135,4 +136,18 @@ test('simultaneous playlist requests share a fetch and recover after failed refr
   assert.equal(context.playlistLoads.size,0);
   context.fetchPlaylist=async()=>playlist();
   assert.equal((await context.playlist()).id,'liked');
+});
+
+test('an uncached playlist starts at the top instead of borrowing the old playlist position',async()=>{
+  const {context:c}=await harness(),restored=[];
+  c.window.scrollY=3200;c.restoreLibraryView=view=>restored.push(view);
+  c.displayPlaylist(playlist('new-list'));
+  assert.equal(restored[0].top,0);assert.equal(restored[0].visible,60);
+});
+test('a hidden playlist refresh uses its saved view instead of the history page scroll',async()=>{
+  const {context:c}=await harness(),restored=[];
+  c.displayPlaylist(playlist());c.libraryViewActive=()=>false;c.window.scrollY=90;
+  c.libraryViews.read=()=>({query:'live',visible:420,top:2400});c.restoreLibraryView=view=>restored.push(view);
+  c.displayPlaylist({...playlist(),songs:[{...playlist().songs[0],title:'Updated'}]});
+  assert.equal(restored[0].top,2400);assert.equal(restored[0].query,'live');
 });

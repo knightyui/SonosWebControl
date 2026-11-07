@@ -23,3 +23,38 @@ export function createPlaylistCache(storage){
     clear(){try{storage.removeItem(key);}catch{}}
   };
 }
+
+// Short-lived query results stay in memory and are isolated from account changes.
+export function createQueryCache({now=Date.now,ttl=300000,limit=40}={}){
+  const entries=new Map(),pending=new Map();let epoch=0;
+  const key=(account,query,page)=>JSON.stringify([account,String(query).trim().toLocaleLowerCase(),page]);
+  const copy=value=>structuredClone(value);
+  return {
+    async load(account,query,page,loader){
+      const id=key(account,query,page),hit=entries.get(id);
+      if(hit&&now()-hit.at<ttl){entries.delete(id);entries.set(id,hit);return copy(hit.data);}
+      if(pending.has(id))return copy(await pending.get(id));
+      const generation=epoch;
+      const task=Promise.resolve().then(loader).then(data=>{
+        if(generation===epoch){entries.delete(id);entries.set(id,{at:now(),data:copy(data)});while(entries.size>limit)entries.delete(entries.keys().next().value);}
+        return data;
+      });
+      pending.set(id,task);
+      try{return copy(await task);}finally{if(pending.get(id)===task)pending.delete(id);}
+    },
+    clear(){epoch++;entries.clear();pending.clear();}
+  };
+}
+
+export function createLibraryViewStore(storage){
+  const key='sonos-library-views-v1';
+  const valid=e=>e&&typeof e.account==='string'&&e.account&&typeof e.id==='string'&&e.id&&
+    typeof e.query==='string'&&e.query.length<=160&&Number.isInteger(e.visible)&&e.visible>=60&&e.visible<=10000&&
+    Number.isFinite(e.top)&&e.top>=0&&e.top<=2000000;
+  function read(){try{const value=JSON.parse(storage.getItem(key));return value?.version===1&&Array.isArray(value.entries)?value.entries.filter(valid).slice(0,12):[];}catch{return [];}}
+  return {
+    read:(account,id)=>read().find(e=>e.account===account&&e.id===id)||null,
+    write(account,id,view){const entry={account,id,...view};if(!valid(entry))return;try{storage.setItem(key,JSON.stringify({version:1,entries:[entry,...read().filter(e=>e.account!==account||e.id!==id)].slice(0,12)}));}catch{}},
+    clear(){try{storage.removeItem(key);}catch{}}
+  };
+}

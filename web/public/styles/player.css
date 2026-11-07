@@ -1,0 +1,227 @@
+/* player */
+
+.disc {
+  width: 230px;
+  height: 230px;
+  border-radius: 50%;
+  background: repeating-radial-gradient(circle,#1a1924 0 2px,#252130 3px 5px);
+  box-shadow: 0 12px 35px #0009,0 0 0 13px #c69cc924;
+  display: grid;
+  place-items: center;
+}
+
+#album-art {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 1;
+}
+
+.player-utilities #sleep-badge {
+  color: var(--accent);
+}
+
+.player-utilities button[aria-pressed=true] {
+  background: var(--accent);
+  color: var(--page-bg);
+  border-color: var(--accent);
+}
+
+.disc-center {
+  width: 68px;
+  height: 68px;
+  border-radius: 50%;
+  border: 24px solid #776393;
+  box-shadow: 0 0 0 4px #211c29;
+  background: var(--accent);
+  border-color: var(--surface-raised);
+}
+
+.player input[type=range]:focus-visible {
+  outline: 2px solid #8f7aa9;
+  outline-offset: 1px;
+  border-radius: 6px;
+  outline-color: var(--accent);
+}
+
+.player-utilities button:hover {
+  background: #ffffff19;
+}
+
+.player-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  justify-content: center;
+}
+
+#track-artist {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+  font-size: 19px;
+  margin: 0 0 22px;
+}
+
+.player-lyric:hover {
+  background: transparent;
+  color: #fff;
+}
+
+#lyric-current {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 560;
+  font-size: 15px;
+}
+
+.progress {
+  display: flex;
+  align-items: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
+  font-size: var(--type-caption);
+  gap: 13px;
+}
+
+.player-utilities button span {
+  display: none;
+}
+
+.player-utilities svg {
+  display: block;
+  width: 23px;
+  height: 23px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.player-utilities #utilities-open svg {
+  fill: currentColor;
+  stroke: none;
+}
+
+.player {
+  display: grid;
+  grid-template-columns: minmax(280px,370px) minmax(0,1fr);
+  margin-bottom: 15px;
+  border-bottom: 1px solid var(--sonos-line);
+  border-radius: 0;
+  padding: var(--space-5) 10px 36px;
+  gap: clamp(28px,5vw,68px);
+  border-color: #ffffff14;
+}
+
+.player-art {
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  position: relative;
+  aspect-ratio: 1;
+  min-height: 0;
+  background: radial-gradient(circle,var(--surface-raised),var(--surface-deep));
+  width: 100%;
+  max-height: none;
+  border-radius: 24px;
+  box-shadow: 0 24px 64px #0006,0 0 0 1px #ffffff12;
+}
+
+.player h1 {
+  letter-spacing: -.035em;
+  line-height: 1.12;
+}
+
+.player #track-artist {
+  color: var(--text-secondary);
+  margin-top: 6px;
+}
+
+.player-lyric {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  min-height: 48px;
+  margin: 0 0 23px;
+  padding: 0;
+  color: var(--text-primary);
+}
+
+#lyric-next {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--type-label);
+  color: var(--text-secondary);
+}
+
+.player .volume {
+  max-width: 450px;
+  gap: 9px;
+}
+
+.player-utilities {
+  flex-wrap: wrap;
+  width: 100%;
+  display: grid;
+  grid-template-columns: 48px minmax(0,1fr) 48px;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  max-width: 450px;
+  margin-top: 18px;
+}
+
+.player-utilities button {
+  font-size: var(--type-label);
+  font-weight: 600;
+  transition: color var(--motion-fast) ease,background-color var(--motion-fast) ease,opacity var(--motion-fast) ease;
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  min-height: 48px;
+  padding: 0 !important;
+  border: 1px solid var(--sonos-line);
+  border-radius: 50%;
+  border-color: #ffffff22;
+  background: linear-gradient(140deg,#ffffff1a,#ffffff06);
+  box-shadow: inset 0 1px 0 #ffffff14;
+  color: #fff;
+}
+
+.player-utilities #queue-open {
+  color: #fff;
+  background: linear-gradient(140deg,#ffffff1a,#ffffff06);
+  border-color: #ffffff22;
+}
+
+.player-utilities #utilities-open {
+  background: linear-gradient(140deg,#ffffff1a,#ffffff06);
+  border-color: #ffffff22;
+}
+
+.player-room-name {
+  text-align: center;
+  font-size: 15px;
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #e1e7e9;
+  letter-spacing: .02em;
+}
